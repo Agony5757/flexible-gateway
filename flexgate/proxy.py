@@ -6,9 +6,9 @@ import logging
 import httpx
 from starlette.responses import JSONResponse, StreamingResponse
 
-from gateway.config import ProviderConfig
+from flexgate.config import ProviderConfig
 
-logger = logging.getLogger("gateway.proxy")
+logger = logging.getLogger("flexgate.proxy")
 
 
 def _error_json(error_type: str, message: str, status: int) -> JSONResponse:

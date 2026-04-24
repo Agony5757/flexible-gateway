@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from gateway.config import GatewayConfig, ProviderConfig, RouteConfig
+from flexgate.config import GatewayConfig, ProviderConfig, RouteConfig
 
 
 class NoRouteMatchError(Exception):

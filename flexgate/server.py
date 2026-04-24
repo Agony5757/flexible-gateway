@@ -11,11 +11,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from gateway.config import GatewayConfig
-from gateway.proxy import handle_request
-from gateway.router import NoRouteMatchError, resolve
+from flexgate.config import GatewayConfig
+from flexgate.proxy import handle_request
+from flexgate.router import NoRouteMatchError, resolve
 
-logger = logging.getLogger("gateway")
+logger = logging.getLogger("flexgate")
 
 
 def _error_json(error_type: str, message: str, status: int) -> JSONResponse:
