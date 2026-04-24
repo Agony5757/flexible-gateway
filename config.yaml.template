@@ -1,0 +1,31 @@
+server:
+  host: "127.0.0.1"
+  port: 8765
+
+providers:
+  zai:
+    base_url: "https://api.z.ai/api/anthropic"
+    api_key: "your-zai-api-key"
+  minimax:
+    base_url: "https://api.minimaxi.com/anthropic"
+    api_key: "your-minimax-api-key"
+
+claude_settings:
+  default_opus_model: "claude-opus-4-7"
+  default_sonnet_model: "claude-sonnet-4-6"
+  default_haiku_model: "claude-haiku-4-5"
+  api_timeout_ms: 3000000
+
+routes:
+  - pattern: "^claude-opus"
+    provider: zai
+    model: "glm-5.1"
+  - pattern: "^claude-sonnet"
+    provider: minimax
+    model: "MiniMax-M2.7"
+  - pattern: "^claude-haiku"
+    provider: minimax
+    model: "MiniMax-M2.7"
+  - pattern: ".*"
+    provider: minimax
+    model: "MiniMax-M2.7"

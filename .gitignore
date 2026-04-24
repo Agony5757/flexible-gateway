@@ -1,0 +1,5 @@
+__pycache__/
+*.log
+uv.lock
+*.pid
+config.yaml
