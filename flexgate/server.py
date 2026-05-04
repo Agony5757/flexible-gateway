@@ -39,12 +39,12 @@ async def messages(request: Request) -> JSONResponse:
     model_name = body_json.get("model", "")
 
     try:
-        provider, model_override = resolve(config, model_name)
+        provider, model_override, schedule_name = resolve(config, model_name)
     except NoRouteMatchError as exc:
         return _error_json("not_found_error", str(exc), 503)
 
     display_model = model_override or model_name
-    logger.info("%s -> %s (%s)", model_name, provider.name, display_model)
+    logger.info("[%s] %s -> %s (%s)", schedule_name, model_name, provider.name, display_model)
 
     incoming_headers = dict(request.headers)
     resp = await handle_request(
@@ -53,8 +53,8 @@ async def messages(request: Request) -> JSONResponse:
 
     elapsed_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
-        "%s -> %s (%s) | %s | %dms",
-        model_name, provider.name, display_model, resp.status_code, elapsed_ms,
+        "[%s] %s -> %s (%s) | %s | %dms",
+        schedule_name, model_name, provider.name, display_model, resp.status_code, elapsed_ms,
     )
     return resp
 

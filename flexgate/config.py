@@ -34,11 +34,45 @@ class ClaudeSettings:
 
 
 @dataclass
+class ScheduleEntry:
+    name: str
+    start_minutes: int
+    end_minutes: int
+    routes: list[RouteConfig] = field(default_factory=list)
+
+
+@dataclass
 class GatewayConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     providers: dict[str, ProviderConfig] = field(default_factory=dict)
     routes: list[RouteConfig] = field(default_factory=list)
+    schedule: list[ScheduleEntry] = field(default_factory=list)
     claude_settings: ClaudeSettings = field(default_factory=ClaudeSettings)
+
+
+def _parse_hhmm(value: str) -> int:
+    """Parse 'HH:MM' string to minutes since midnight."""
+    parts = value.strip().split(":")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid time format '{value}', expected 'HH:MM'")
+    h, m = int(parts[0]), int(parts[1])
+    if not (0 <= h <= 24 and 0 <= m <= 59):
+        raise ValueError(f"Time out of range: '{value}'")
+    return h * 60 + m
+
+
+def _parse_routes(raw_routes: list[dict], providers: dict[str, ProviderConfig]) -> list[RouteConfig]:
+    routes: list[RouteConfig] = []
+    for r in raw_routes:
+        prov_name = r["provider"]
+        if prov_name not in providers:
+            raise ValueError(f"Route references unknown provider '{prov_name}'")
+        routes.append(RouteConfig(
+            pattern=re.compile(r["pattern"]),
+            provider_name=prov_name,
+            model=r.get("model"),
+        ))
+    return routes
 
 
 def load_config(path: str | None = None) -> GatewayConfig:
@@ -68,15 +102,14 @@ def load_config(path: str | None = None) -> GatewayConfig:
             api_key=prov["api_key"],
         )
 
-    for r in raw.get("routes", []):
-        pat = r["pattern"]
-        prov_name = r["provider"]
-        if prov_name not in cfg.providers:
-            raise ValueError(f"Route references unknown provider '{prov_name}'")
-        cfg.routes.append(RouteConfig(
-            pattern=re.compile(pat),
-            provider_name=prov_name,
-            model=r.get("model"),
+    cfg.routes = _parse_routes(raw.get("routes", []), cfg.providers)
+
+    for entry in raw.get("schedule", []):
+        cfg.schedule.append(ScheduleEntry(
+            name=entry.get("name", ""),
+            start_minutes=_parse_hhmm(entry["start"]),
+            end_minutes=_parse_hhmm(entry["end"]),
+            routes=_parse_routes(entry.get("routes", []), cfg.providers),
         ))
 
     cs = raw.get("claude_settings", {})
@@ -89,6 +122,20 @@ def load_config(path: str | None = None) -> GatewayConfig:
         )
 
     return cfg
+
+
+def _serialize_routes(routes: list[RouteConfig]) -> list[dict]:
+    result: list[dict] = []
+    for route in routes:
+        r: dict = {"pattern": route.pattern.pattern, "provider": route.provider_name}
+        if route.model:
+            r["model"] = route.model
+        result.append(r)
+    return result
+
+
+def _format_hhmm(minutes: int) -> str:
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
 
 
 def save_config(cfg: GatewayConfig, path: str | None = None) -> None:
@@ -109,7 +156,7 @@ def save_config(cfg: GatewayConfig, path: str | None = None) -> None:
             "default_haiku_model": cfg.claude_settings.default_haiku_model,
             "api_timeout_ms": cfg.claude_settings.api_timeout_ms,
         },
-        "routes": [],
+        "routes": _serialize_routes(cfg.routes),
     }
 
     for name, prov in cfg.providers.items():
@@ -118,11 +165,16 @@ def save_config(cfg: GatewayConfig, path: str | None = None) -> None:
             "api_key": prov.api_key,
         }
 
-    for route in cfg.routes:
-        r: dict = {"pattern": route.pattern.pattern, "provider": route.provider_name}
-        if route.model:
-            r["model"] = route.model
-        data["routes"].append(r)
+    if cfg.schedule:
+        schedule_data: list[dict] = []
+        for entry in cfg.schedule:
+            schedule_data.append({
+                "name": entry.name,
+                "start": _format_hhmm(entry.start_minutes),
+                "end": _format_hhmm(entry.end_minutes),
+                "routes": _serialize_routes(entry.routes),
+            })
+        data["schedule"] = schedule_data
 
     with open(path, "w") as f:
         yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
