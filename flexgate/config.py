@@ -24,6 +24,11 @@ class ProviderConfig:
     name: str
     base_url: str
     api_key: str
+    available_models: list[str] = field(default_factory=list)
+
+    @property
+    def default_model(self) -> str | None:
+        return self.available_models[0] if self.available_models else None
 
 
 @dataclass
@@ -81,10 +86,17 @@ def _parse_routes(raw_routes: list[dict], providers: dict[str, ProviderConfig]) 
         prov_name = r["provider"]
         if prov_name not in providers:
             raise ValueError(f"Route references unknown provider '{prov_name}'")
+        model = r.get("model")
+        if model is None and not providers[prov_name].available_models:
+            raise ValueError(
+                f"Route '{r['pattern']}' omits 'model' but provider '{prov_name}' "
+                f"has no 'available_models' to fall back to. "
+                f"Add 'available_models' to provider '{prov_name}' or set an explicit 'model' on the route."
+            )
         routes.append(RouteConfig(
             pattern=re.compile(r["pattern"]),
             provider_name=prov_name,
-            model=r.get("model"),
+            model=model,
         ))
     return routes
 
@@ -110,10 +122,16 @@ def load_config(path: str | None = None) -> GatewayConfig:
     )
 
     for name, prov in raw.get("providers", {}).items():
+        available = prov.get("available_models", []) or []
+        if not isinstance(available, list):
+            raise ValueError(
+                f"Provider '{name}': 'available_models' must be a list of model names"
+            )
         cfg.providers[name] = ProviderConfig(
             name=name,
             base_url=prov["base_url"].rstrip("/"),
             api_key=prov["api_key"],
+            available_models=[str(m) for m in available],
         )
 
     cfg.routes = _parse_routes(raw.get("routes", []), cfg.providers)
@@ -174,10 +192,13 @@ def save_config(cfg: GatewayConfig, path: str | None = None) -> None:
     }
 
     for name, prov in cfg.providers.items():
-        data["providers"][name] = {
+        entry: dict = {
             "base_url": prov.base_url,
             "api_key": prov.api_key,
         }
+        if prov.available_models:
+            entry["available_models"] = list(prov.available_models)
+        data["providers"][name] = entry
 
     if cfg.schedule:
         schedule_data: list[dict] = []
@@ -205,13 +226,20 @@ server:
   host: "127.0.0.1"
   port: 8765
 
+# Each provider must declare `available_models`. The first entry is used as the
+# fallback model whenever a route below omits its own `model:` field.
 providers:
   zai:
     base_url: "https://api.z.ai/api/anthropic"
     api_key: "your-zai-api-key"
+    available_models:
+      - "glm-5.1"      # used as fallback when a route omits `model`
+      - "glm-4.6"
   minimax:
     base_url: "https://api.minimaxi.com/anthropic"
     api_key: "your-minimax-api-key"
+    available_models:
+      - "MiniMax-M2.7"
 
 claude_settings:
   default_opus_model: "claude-opus-4-7"
@@ -219,6 +247,9 @@ claude_settings:
   default_haiku_model: "claude-haiku-4-5"
   api_timeout_ms: 3000000
 
+# Routes are matched top-to-bottom; first match wins.
+# `model:` is optional — when omitted, the provider's first available_models
+# entry is used. A provider referenced without `model` MUST have available_models.
 routes:
   - pattern: "^claude-opus"
     provider: zai
@@ -229,7 +260,6 @@ routes:
   - pattern: "^claude-haiku"
     provider: minimax
     model: "MiniMax-M2.7"
-  - pattern: ".*"
+  - pattern: ".*"           # catch-all, falls back to minimax's first available model
     provider: minimax
-    model: "MiniMax-M2.7"
 """

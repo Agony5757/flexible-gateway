@@ -434,6 +434,13 @@ def cmd_config_set(args: argparse.Namespace) -> None:
         print(f"\nAdd it to {config_path} first (base_url and api_key required).")
         sys.exit(1)
 
+    provider = config.providers[provider_name]
+    if model_override is None and not provider.available_models:
+        print(f"Provider '{provider_name}' has no 'available_models' to fall back to.")
+        print(f"Either add 'available_models' to provider '{provider_name}' in {config_path},")
+        print(f"or specify a model: flexgate config set {tier} {provider_name} <model>")
+        sys.exit(1)
+
     # Update existing route or insert new one
     updated = False
     for route in config.routes:
@@ -464,6 +471,8 @@ def cmd_config_set(args: argparse.Namespace) -> None:
     display = provider_name
     if model_override:
         display += f" / {model_override}"
+    elif provider.available_models:
+        display += f" / {provider.available_models[0]} (fallback)"
     print(f"Set {tier} ({pattern}) → {display}")
     print(f"Saved: {config_path}")
 

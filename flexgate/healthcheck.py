@@ -76,16 +76,17 @@ def _collect_targets(config: GatewayConfig) -> list[tuple[ProviderConfig, str | 
         provider = config.providers.get(route.provider_name)
         if provider is None:
             continue
-        key = (route.provider_name, route.model)
+        model = route.model or provider.default_model
+        key = (route.provider_name, model)
         if key in seen:
             continue
         seen.add(key)
-        targets.append((provider, route.model))
+        targets.append((provider, model))
 
     covered = {name for name, _ in seen}
     for name, prov in config.providers.items():
         if name not in covered:
-            targets.append((prov, None))
+            targets.append((prov, prov.default_model))
 
     return targets
 
