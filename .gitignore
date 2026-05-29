@@ -3,3 +3,4 @@ __pycache__/
 uv.lock
 *.pid
 config.yaml
+.github/copilot-instructions.md

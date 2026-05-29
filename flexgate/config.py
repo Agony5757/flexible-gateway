@@ -4,6 +4,20 @@ import os
 import re
 from dataclasses import dataclass, field
 
+FLEXGATE_HOME = os.path.expanduser("~/.flexgate")
+
+
+def get_default_config_path() -> str:
+    """Config path priority: FLEXGATE_CONFIG env > ~/.flexgate/config.yaml."""
+    env = os.environ.get("FLEXGATE_CONFIG")
+    if env:
+        return env
+    return os.path.join(FLEXGATE_HOME, "config.yaml")
+
+
+def ensure_home_dir() -> None:
+    os.makedirs(FLEXGATE_HOME, exist_ok=True)
+
 
 @dataclass
 class ProviderConfig:
@@ -79,7 +93,7 @@ def load_config(path: str | None = None) -> GatewayConfig:
     import yaml
 
     if path is None:
-        path = os.environ.get("FLEXGATE_CONFIG", "config.yaml")
+        path = get_default_config_path()
 
     with open(path) as f:
         raw = yaml.safe_load(f)
@@ -142,7 +156,7 @@ def save_config(cfg: GatewayConfig, path: str | None = None) -> None:
     import yaml
 
     if path is None:
-        path = os.environ.get("FLEXGATE_CONFIG", "config.yaml")
+        path = get_default_config_path()
 
     data: dict = {
         "server": {
@@ -178,3 +192,44 @@ def save_config(cfg: GatewayConfig, path: str | None = None) -> None:
 
     with open(path, "w") as f:
         yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+
+TIER_PATTERNS: dict[str, str] = {
+    "opus": "^claude-opus",
+    "sonnet": "^claude-sonnet",
+    "haiku": "^claude-haiku",
+}
+
+DEFAULT_CONFIG_TEMPLATE = """\
+server:
+  host: "127.0.0.1"
+  port: 8765
+
+providers:
+  zai:
+    base_url: "https://api.z.ai/api/anthropic"
+    api_key: "your-zai-api-key"
+  minimax:
+    base_url: "https://api.minimaxi.com/anthropic"
+    api_key: "your-minimax-api-key"
+
+claude_settings:
+  default_opus_model: "claude-opus-4-7"
+  default_sonnet_model: "claude-sonnet-4-6"
+  default_haiku_model: "claude-haiku-4-5"
+  api_timeout_ms: 3000000
+
+routes:
+  - pattern: "^claude-opus"
+    provider: zai
+    model: "glm-5.1"
+  - pattern: "^claude-sonnet"
+    provider: minimax
+    model: "MiniMax-M2.7"
+  - pattern: "^claude-haiku"
+    provider: minimax
+    model: "MiniMax-M2.7"
+  - pattern: ".*"
+    provider: minimax
+    model: "MiniMax-M2.7"
+"""

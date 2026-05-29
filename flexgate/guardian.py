@@ -238,8 +238,8 @@ if __name__ == "__main__":
     strict = sys.argv[3] == "true"
     gateway_pid = int(sys.argv[4]) if len(sys.argv) == 5 else None
 
-    script_dir = Path(__file__).parent.parent.resolve()
-    pid_file = str(script_dir / "flexgate.guardian.pid")
+    from flexgate.config import FLEXGATE_HOME
+    pid_file = os.path.join(FLEXGATE_HOME, "flexgate.guardian.pid")
 
     cfg = GuardianConfig(
         port=port,
