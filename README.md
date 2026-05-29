@@ -90,12 +90,15 @@ flexgate gateway check           # 仅运行上游连通性检测，不启动服
 flexgate config init             # 创建默认配置（~/.flexgate/config.yaml）
 flexgate config show             # 查看当前配置（providers、路由、定时规则）
 flexgate config path             # 打印配置文件路径
-flexgate config set <tier> <target> [model]  # 快速设置路由
+flexgate config set <tier> <target> [model]  # 快速设置路由（tier 可为 all/opus/sonnet/haiku）
 ```
 
 `config set` 支持按 provider 名或 model 名设置路由：
 
 ```bash
+# 批量切换所有 tier（opus/sonnet/haiku）到同一个 provider
+flexgate config set all xiaomi
+
 # 按 provider 名 + model 名
 flexgate config set sonnet minimax MiniMax-M2.7
 

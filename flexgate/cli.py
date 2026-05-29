@@ -369,12 +369,15 @@ def cmd_config_set(args: argparse.Namespace) -> None:
     target = args.target
     model_arg = args.model
 
-    if tier not in TIER_PATTERNS:
+    if tier == "all":
+        tiers = list(TIER_PATTERNS)
+    elif tier in TIER_PATTERNS:
+        tiers = [tier]
+    else:
         print(f"Unknown tier '{tier}'.")
-        print(f"Available: {', '.join(TIER_PATTERNS)}")
+        print(f"Available: all, {', '.join(TIER_PATTERNS)}")
         sys.exit(1)
 
-    pattern = TIER_PATTERNS[tier]
     config_path = args.config
 
     if not os.path.exists(config_path):
@@ -441,30 +444,32 @@ def cmd_config_set(args: argparse.Namespace) -> None:
         print(f"or specify a model: flexgate config set {tier} {provider_name} <model>")
         sys.exit(1)
 
-    # Update existing route or insert new one
-    updated = False
-    for route in config.routes:
-        if route.pattern.pattern == pattern:
-            route.provider_name = provider_name
-            route.model = model_override
-            updated = True
-            break
-
-    if not updated:
-        new_route = RouteConfig(
-            pattern=re.compile(pattern),
-            provider_name=provider_name,
-            model=model_override,
-        )
-        # Insert before catch-all if it exists
-        inserted = False
-        for i, route in enumerate(config.routes):
-            if route.pattern.pattern == ".*":
-                config.routes.insert(i, new_route)
-                inserted = True
+    # Update existing route or insert new one for each target tier
+    for tier_name in tiers:
+        pattern = TIER_PATTERNS[tier_name]
+        updated = False
+        for route in config.routes:
+            if route.pattern.pattern == pattern:
+                route.provider_name = provider_name
+                route.model = model_override
+                updated = True
                 break
-        if not inserted:
-            config.routes.append(new_route)
+
+        if not updated:
+            new_route = RouteConfig(
+                pattern=re.compile(pattern),
+                provider_name=provider_name,
+                model=model_override,
+            )
+            # Insert before catch-all if it exists
+            inserted = False
+            for i, route in enumerate(config.routes):
+                if route.pattern.pattern == ".*":
+                    config.routes.insert(i, new_route)
+                    inserted = True
+                    break
+            if not inserted:
+                config.routes.append(new_route)
 
     save_config(config, config_path)
 
@@ -473,7 +478,8 @@ def cmd_config_set(args: argparse.Namespace) -> None:
         display += f" / {model_override}"
     elif provider.available_models:
         display += f" / {provider.available_models[0]} (fallback)"
-    print(f"Set {tier} ({pattern}) → {display}")
+    for tier_name in tiers:
+        print(f"Set {tier_name} ({TIER_PATTERNS[tier_name]}) → {display}")
     print(f"Saved: {config_path}")
 
 
@@ -536,7 +542,7 @@ def main() -> None:
     cf_sub.add_parser("show", help="Show current configuration")
     cf_sub.add_parser("path", help="Print config file path")
     cf_set = cf_sub.add_parser("set", help="Set route for a tier")
-    cf_set.add_argument("tier", help="Tier: opus, sonnet, or haiku")
+    cf_set.add_argument("tier", help="Tier: all, opus, sonnet, or haiku")
     cf_set.add_argument("target", help="Provider name or model name")
     cf_set.add_argument("model", nargs="?", default=None, help="Model override (when target is a provider)")
 
