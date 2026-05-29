@@ -371,12 +371,18 @@ def cmd_config_set(args: argparse.Namespace) -> None:
 
     if tier == "all":
         tiers = list(TIER_PATTERNS)
-    elif tier in TIER_PATTERNS:
-        tiers = [tier]
     else:
-        print(f"Unknown tier '{tier}'.")
-        print(f"Available: all, {', '.join(TIER_PATTERNS)}")
-        sys.exit(1)
+        tiers = [t.strip() for t in tier.split(",") if t.strip()]
+        unknown = [t for t in tiers if t not in TIER_PATTERNS]
+        if not tiers or unknown:
+            bad = unknown[0] if unknown else tier
+            print(f"Unknown tier '{bad}'.")
+            print(f"Available: all, {', '.join(TIER_PATTERNS)}")
+            print("Combine multiple tiers with commas, e.g. opus,sonnet")
+            sys.exit(1)
+        # De-duplicate while preserving order
+        seen_tiers: set[str] = set()
+        tiers = [t for t in tiers if not (t in seen_tiers or seen_tiers.add(t))]
 
     config_path = args.config
 
@@ -542,7 +548,7 @@ def main() -> None:
     cf_sub.add_parser("show", help="Show current configuration")
     cf_sub.add_parser("path", help="Print config file path")
     cf_set = cf_sub.add_parser("set", help="Set route for a tier")
-    cf_set.add_argument("tier", help="Tier: all, opus, sonnet, or haiku")
+    cf_set.add_argument("tier", help="Tier: all, or comma-separated opus,sonnet,haiku")
     cf_set.add_argument("target", help="Provider name or model name")
     cf_set.add_argument("model", nargs="?", default=None, help="Model override (when target is a provider)")
 

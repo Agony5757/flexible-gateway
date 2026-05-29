@@ -99,6 +99,9 @@ flexgate config set <tier> <target> [model]  # 快速设置路由（tier 可为 
 # 批量切换所有 tier（opus/sonnet/haiku）到同一个 provider
 flexgate config set all xiaomi
 
+# 用逗号组合多个 tier
+flexgate config set opus,sonnet xiaomi
+
 # 按 provider 名 + model 名
 flexgate config set sonnet minimax MiniMax-M2.7
 
