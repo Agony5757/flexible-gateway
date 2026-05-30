@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import signal
 import time
 from collections.abc import AsyncGenerator
 
@@ -11,7 +12,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from flexgate.config import GatewayConfig
+from flexgate.config import GatewayConfig, load_config
 from flexgate.proxy import handle_request
 from flexgate.router import NoRouteMatchError, resolve
 
@@ -59,7 +60,7 @@ async def messages(request: Request) -> JSONResponse:
     return resp
 
 
-def create_app(config: GatewayConfig) -> Starlette:
+def create_app(config: GatewayConfig, config_path: str | None = None) -> Starlette:
     client = httpx.AsyncClient(
         timeout=httpx.Timeout(connect=10, read=3600, write=10, pool=10),
     )
@@ -69,6 +70,15 @@ def create_app(config: GatewayConfig) -> Starlette:
     async def lifespan(app: Starlette) -> AsyncGenerator[None, None]:
         app.state.config = config
         app.state.client = client
+
+        def _handle_sigusr1(signum, frame):
+            try:
+                app.state.config = load_config(config_path)
+                logger.info("Config reloaded via SIGUSR1")
+            except Exception as e:
+                logger.error("Failed to reload config: %s", e)
+
+        signal.signal(signal.SIGUSR1, _handle_sigusr1)
         yield
         await client.aclose()
 

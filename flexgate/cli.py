@@ -93,22 +93,6 @@ def cmd_gateway_start(args: argparse.Namespace) -> None:
             print(f"[Guardian] Please stop that process first, then run 'flexgate gateway start' again.")
             sys.exit(1)
 
-    # Connectivity pre-check: verify each provider/model is reachable and
-    # the API key is accepted before spawning the daemon.
-    if not getattr(args, "no_verify", False):
-        timeout = getattr(args, "verify_timeout", 15.0)
-        print(f"Verifying provider connectivity (timeout {timeout:g}s)...")
-        results = check_providers(config, timeout=timeout)
-        print_results(results)
-        failures = [r for r in results if not r.ok]
-        if failures:
-            print(
-                f"\nConnectivity check failed for {len(failures)} target(s). "
-                f"Refusing to start.\n"
-                f"Re-run with --no-verify to skip, or fix the issues above."
-            )
-            sys.exit(1)
-
     ensure_home_dir()
 
     cmd = [sys.executable, "-m", "flexgate.main"]
@@ -488,6 +472,15 @@ def cmd_config_set(args: argparse.Namespace) -> None:
         print(f"Set {tier_name} ({TIER_PATTERNS[tier_name]}) → {display}")
     print(f"Saved: {config_path}")
 
+    # Hot-reload: signal the running gateway to pick up the new config
+    pid = _read_pid()
+    if pid and _is_running(pid):
+        try:
+            os.kill(pid, signal.SIGUSR1)
+            print(f"Gateway (PID {pid}) signaled to reload config")
+        except (PermissionError, ProcessLookupError) as e:
+            print(f"Warning: could not signal gateway: {e}")
+
 
 def cmd_config_path(args: argparse.Namespace) -> None:
     print(args.config)
@@ -516,14 +509,6 @@ def main() -> None:
     gw_start.add_argument(
         "--guardian-interval", type=float, default=3.0,
         help="Port check interval in seconds for the guardian (default: 3.0)"
-    )
-    gw_start.add_argument(
-        "--no-verify", action="store_true",
-        help="Skip upstream connectivity verification before starting"
-    )
-    gw_start.add_argument(
-        "--verify-timeout", type=float, default=15.0,
-        help="Per-provider connectivity check timeout in seconds (default: 15.0)"
     )
     gw_sub.add_parser("stop", help="Stop background gateway")
     gw_sub.add_parser("restart", help="Restart gateway")

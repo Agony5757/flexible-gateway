@@ -19,7 +19,7 @@ def run_server(config_path: str, port: int | None) -> None:
 
     config = load_config(config_path)
     port = port or config.server.port
-    app = create_app(config)
+    app = create_app(config, config_path=config_path)
     uvicorn.run(app, host=config.server.host, port=port, log_level="info")
 
 
