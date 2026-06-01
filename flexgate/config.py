@@ -239,7 +239,7 @@ providers:
     base_url: "https://api.minimaxi.com/anthropic"
     api_key: "your-minimax-api-key"
     available_models:
-      - "MiniMax-M2.7"
+      - "MiniMax-M3"
 
 claude_settings:
   default_opus_model: "claude-opus-4-7"
@@ -256,10 +256,10 @@ routes:
     model: "glm-5.1"
   - pattern: "^claude-sonnet"
     provider: minimax
-    model: "MiniMax-M2.7"
+    model: "MiniMax-M3"
   - pattern: "^claude-haiku"
     provider: minimax
-    model: "MiniMax-M2.7"
+    model: "MiniMax-M3"
   - pattern: ".*"           # catch-all, falls back to minimax's first available model
     provider: minimax
 """

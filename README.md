@@ -8,8 +8,8 @@ Claude Code 只能配置一个 `ANTHROPIC_BASE_URL`，所有 tier（opus/sonnet/
 
 ```
 Claude Code → localhost:8765 → opus  → z.ai (glm-5.1)
-                           → sonnet → minimax (MiniMax-M2.7)
-                           → haiku  → minimax (MiniMax-M2.7)
+                           → sonnet → minimax (MiniMax-M3)
+                           → haiku  → minimax (MiniMax-M3)
 ```
 
 ## 安装
@@ -103,14 +103,14 @@ flexgate config set all xiaomi
 flexgate config set opus,sonnet xiaomi
 
 # 按 provider 名 + model 名
-flexgate config set sonnet minimax MiniMax-M2.7
+flexgate config set sonnet minimax MiniMax-M3
 
 # 按 provider 名（不改写 model）
 flexgate config set opus zai
 
 # 按 model 名自动查找 provider
-flexgate config set haiku MiniMax-M2.7
-# → 自动解析为 minimax / MiniMax-M2.7
+flexgate config set haiku MiniMax-M3
+# → 自动解析为 minimax / MiniMax-M3
 
 # 如果 model 名在多个 provider 中存在，会提示歧义：
 # Ambiguous: 'xxx' found in multiple providers:
@@ -180,13 +180,13 @@ routes:                          # 从上到下匹配，首个命中生效
     model: "glm-5.1"            # 可选，发给 provider 的实际模型名
   - pattern: "^claude-sonnet"
     provider: minimax
-    model: "MiniMax-M2.7"
+    model: "MiniMax-M3"
   - pattern: "^claude-haiku"
     provider: minimax
-    model: "MiniMax-M2.7"
+    model: "MiniMax-M3"
   - pattern: ".*"               # 兜底
     provider: minimax
-    model: "MiniMax-M2.7"
+    model: "MiniMax-M3"
 ```
 
 ### 配置字段说明

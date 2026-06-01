@@ -30,7 +30,7 @@ claude_settings:
 #         model: "mimo-v2.5-pro"
 #       - pattern: "^claude-haiku"
 #         provider: minimax
-#         model: "MiniMax-M2.7"
+#         model: "MiniMax-M3"
 
 # 默认路由（不在任何定时窗口内时使用）
 routes:
@@ -39,10 +39,10 @@ routes:
     model: "glm-5.1"
   - pattern: "^claude-sonnet"
     provider: minimax
-    model: "MiniMax-M2.7"
+    model: "MiniMax-M3"
   - pattern: "^claude-haiku"
     provider: minimax
-    model: "MiniMax-M2.7"
+    model: "MiniMax-M3"
   - pattern: ".*"
     provider: minimax
-    model: "MiniMax-M2.7"
+    model: "MiniMax-M3"
