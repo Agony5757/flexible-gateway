@@ -84,11 +84,34 @@ flexgate gateway check           # 仅运行上游连通性检测，不启动服
 任意一项失败都会拒绝启动，提示具体错误。要跳过此检查使用 `--no-verify`，或单独
 运行 `flexgate gateway check` 做一次诊断。
 
+### 服务管理（systemd 用户服务）
+
+将网关安装为 systemd **用户服务**，实现开机/登录自启与崩溃自动重启。适用于 Linux（需要 systemd 用户实例）。
+
+```bash
+flexgate service install             # 安装并启用用户服务（默认立即启动）
+flexgate service install --no-start  # 仅安装并启用，不立即启动
+flexgate service uninstall           # 停止、禁用并删除服务
+flexgate service start               # 启动服务
+flexgate service stop                # 停止服务
+flexgate service status              # 查看服务状态
+flexgate service help                # 查看服务命令帮助
+```
+
+说明：
+- 单元文件写入 `~/.config/systemd/user/flexgate.service`，通过 `flexgate gateway run` 在前台运行并交由 systemd 托管（`Type=simple`、`Restart=on-failure`）。
+- `install` 会执行 `loginctl enable-linger`，使服务在未登录时仍保持运行并随开机启动。
+- 热重载配置（无需重启）：`systemctl --user reload flexgate`（发送 SIGUSR1，等价于编辑配置后的自动重载）。
+- 查看日志：`journalctl --user -u flexgate -e`。
+
+> **注意**：systemd 服务与 `flexgate gateway start` 会绑定同一端口，二者只能选其一，不要同时使用。
+
 ### 配置管理
 
 ```bash
 flexgate config init             # 创建默认配置（~/.flexgate/config.yaml）
 flexgate config show             # 查看当前配置（providers、路由、定时规则）
+flexgate config edit             # 交互式选择每个 tier（opus/sonnet/haiku）的 provider/model
 flexgate config path             # 打印配置文件路径
 flexgate config set <tier> <target> [model]  # 快速设置路由（tier 可为 all/opus/sonnet/haiku）
 ```
@@ -119,6 +142,26 @@ flexgate config set haiku MiniMax-M3
 ```
 
 > **注意**：`config set` 不会修改 API key。如需添加新 provider 或修改密钥，请手动编辑配置文件。
+
+#### 交互式编辑（`config edit`）
+
+运行 `flexgate config edit` 进入全屏交互界面，用 **↑/↓ 方向键移动、回车选择**，无需记忆 provider/model 名称：
+
+```text
+Flexgate config  —  ~/.flexgate/config.yaml
+↑/↓ move · Enter edit tier · s save · q quit
+
+▶ opus      ustc / deepseek-v4-pro
+  sonnet    ustc / deepseek-v4-pro
+  haiku     ustc / deepseek-v4-pro
+
+○ no unsaved changes
+```
+
+- 方向键选中某个 tier（opus/sonnet/haiku），回车进入：先从候选 **provider** 列表选择，再从该 provider 的候选 **model** 列表选择。
+- model 列表包含：`available_models` 中的各个模型、「使用 provider 默认（首个可用模型，不写死 model）」、以及「自定义模型…」（手动输入）。
+- 按 `s` 保存（并向运行中的网关发送 SIGUSR1 热重载），按 `q` 退出（有未保存改动时会提示保存或放弃）；子菜单中按 `Esc`/`←` 返回上一级。
+- 需要交互式终端（TTY）；非交互场景请改用 `flexgate config set`。
 
 ### Settings 管理
 

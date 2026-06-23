@@ -9,6 +9,11 @@ import time
 
 import re
 
+try:
+    import curses
+except ImportError:  # pragma: no cover - curses is unavailable on some platforms
+    curses = None  # type: ignore[assignment]
+
 from flexgate.config import (
     FLEXGATE_HOME,
     GatewayConfig,
@@ -296,6 +301,49 @@ def _print_route_table(routes: list[RouteConfig], indent: int = 2) -> None:
         print(f"{prefix}{tier_col}{r.pattern.pattern:20s} → {target}")
 
 
+def _set_tier_route(
+    config: GatewayConfig, tier_name: str, provider_name: str, model_override: str | None
+) -> None:
+    """Update the default route for a tier, or insert one before the catch-all."""
+    pattern = TIER_PATTERNS[tier_name]
+    for route in config.routes:
+        if route.pattern.pattern == pattern:
+            route.provider_name = provider_name
+            route.model = model_override
+            return
+
+    new_route = RouteConfig(
+        pattern=re.compile(pattern),
+        provider_name=provider_name,
+        model=model_override,
+    )
+    # Insert before the catch-all (".*") if present, else append.
+    for i, route in enumerate(config.routes):
+        if route.pattern.pattern == ".*":
+            config.routes.insert(i, new_route)
+            return
+    config.routes.append(new_route)
+
+
+def _signal_reload() -> str | None:
+    """Send SIGUSR1 to a running gateway (if any). Return a status message, or None."""
+    pid = _read_pid()
+    if pid and _is_running(pid):
+        try:
+            os.kill(pid, signal.SIGUSR1)
+            return f"Gateway (PID {pid}) signaled to reload config"
+        except (PermissionError, ProcessLookupError) as e:
+            return f"Warning: could not signal gateway: {e}"
+    return None
+
+
+def _hot_reload() -> None:
+    """Signal a running gateway (if any) to reload config via SIGUSR1."""
+    msg = _signal_reload()
+    if msg:
+        print(msg)
+
+
 def cmd_config_init(args: argparse.Namespace) -> None:
     config_path = args.config
     if os.path.exists(config_path):
@@ -436,30 +484,7 @@ def cmd_config_set(args: argparse.Namespace) -> None:
 
     # Update existing route or insert new one for each target tier
     for tier_name in tiers:
-        pattern = TIER_PATTERNS[tier_name]
-        updated = False
-        for route in config.routes:
-            if route.pattern.pattern == pattern:
-                route.provider_name = provider_name
-                route.model = model_override
-                updated = True
-                break
-
-        if not updated:
-            new_route = RouteConfig(
-                pattern=re.compile(pattern),
-                provider_name=provider_name,
-                model=model_override,
-            )
-            # Insert before catch-all if it exists
-            inserted = False
-            for i, route in enumerate(config.routes):
-                if route.pattern.pattern == ".*":
-                    config.routes.insert(i, new_route)
-                    inserted = True
-                    break
-            if not inserted:
-                config.routes.append(new_route)
+        _set_tier_route(config, tier_name, provider_name, model_override)
 
     save_config(config, config_path)
 
@@ -473,17 +498,346 @@ def cmd_config_set(args: argparse.Namespace) -> None:
     print(f"Saved: {config_path}")
 
     # Hot-reload: signal the running gateway to pick up the new config
-    pid = _read_pid()
-    if pid and _is_running(pid):
-        try:
-            os.kill(pid, signal.SIGUSR1)
-            print(f"Gateway (PID {pid}) signaled to reload config")
-        except (PermissionError, ProcessLookupError) as e:
-            print(f"Warning: could not signal gateway: {e}")
+    _hot_reload()
 
 
 def cmd_config_path(args: argparse.Namespace) -> None:
     print(args.config)
+
+
+# ── config edit (interactive arrow-key TUI) ───────────────────────
+
+_CANCEL = object()  # sentinel: user backed out of a menu
+_CUSTOM = object()  # sentinel: user chose "enter a custom model"
+
+
+def _tier_current(config: GatewayConfig, tier_name: str) -> tuple[str | None, str | None]:
+    """Return (provider_name, model) for a tier's default route, or (None, None)."""
+    pattern = TIER_PATTERNS[tier_name]
+    for route in config.routes:
+        if route.pattern.pattern == pattern:
+            return route.provider_name, route.model
+    return None, None
+
+
+def _format_target(provider_name: str | None, model: str | None) -> str:
+    if provider_name is None:
+        return "(unset)"
+    if model:
+        return f"{provider_name} / {model}"
+    return f"{provider_name} / (provider default)"
+
+
+# ── curses drawing primitives ─────────────────────────────────────
+
+def _addline(stdscr, y: int, x: int, text: str, attr: int = 0) -> None:
+    h, w = stdscr.getmaxyx()
+    if 0 <= y < h and x < w:
+        try:
+            stdscr.addnstr(y, x, text, max(0, w - 1 - x), attr)
+        except Exception:
+            pass
+
+
+def _menu_draw(stdscr, header_lines, option_labels, index, footer_lines=()) -> None:
+    stdscr.erase()
+    h, _ = stdscr.getmaxyx()
+
+    y = 0
+    for line in header_lines:
+        _addline(stdscr, y, 0, line, curses.A_BOLD if y == 0 else curses.A_NORMAL)
+        y += 1
+
+    footer_h = len(footer_lines)
+    list_top = y
+    visible = max(1, h - footer_h - list_top)
+    n = len(option_labels)
+    if n <= visible:
+        offset = 0
+    else:
+        offset = min(max(0, index - visible // 2), n - visible)
+
+    yy = list_top
+    for i in range(offset, min(n, offset + visible)):
+        selected = i == index
+        marker = "▶ " if selected else "  "
+        attr = (curses.A_REVERSE | curses.A_BOLD) if selected else curses.A_NORMAL
+        _addline(stdscr, yy, 0, marker + option_labels[i], attr)
+        yy += 1
+
+    fy = h - footer_h
+    for line in footer_lines:
+        _addline(stdscr, fy, 0, line)
+        fy += 1
+
+    stdscr.refresh()
+
+
+def _menu_select(stdscr, header_lines, options, index: int = 0):
+    """Arrow-key menu. options: list[(label, value)]. Returns value or _CANCEL."""
+    n = len(options)
+    if n == 0:
+        return _CANCEL
+    index = max(0, min(index, n - 1))
+    footer = ["", "↑/↓ move · Enter select · Esc/← back"]
+    while True:
+        _menu_draw(stdscr, header_lines, [o[0] for o in options], index, footer)
+        key = stdscr.getch()
+        if key in (curses.KEY_UP, ord("k")):
+            index = (index - 1) % n
+        elif key in (curses.KEY_DOWN, ord("j")):
+            index = (index + 1) % n
+        elif key == curses.KEY_HOME:
+            index = 0
+        elif key == curses.KEY_END:
+            index = n - 1
+        elif key in (curses.KEY_ENTER, 10, 13):
+            return options[index][1]
+        elif key in (27, ord("q"), curses.KEY_LEFT):
+            return _CANCEL
+
+
+def _text_input(stdscr, prompt: str) -> str | None:
+    h, w = stdscr.getmaxyx()
+    y = h - 1
+    _addline(stdscr, y, 0, " " * (w - 1))
+    _addline(stdscr, y, 0, prompt, curses.A_BOLD)
+    stdscr.refresh()
+    curses.echo()
+    try:
+        curses.curs_set(1)
+    except Exception:
+        pass
+    try:
+        raw = stdscr.getstr(y, min(len(prompt), w - 2), 200)
+        text = raw.decode("utf-8", "replace").strip()
+    except Exception:
+        text = ""
+    finally:
+        curses.noecho()
+        try:
+            curses.curs_set(0)
+        except Exception:
+            pass
+    return text or None
+
+
+def _confirm(stdscr, question: str):
+    """Yes/No prompt. Returns True, False, or None (cancel)."""
+    sel = _menu_select(
+        stdscr,
+        [question, ""],
+        [("Yes, save changes", True), ("No, discard changes", False)],
+        index=0,
+    )
+    return None if sel is _CANCEL else sel
+
+
+# ── tier edit flow ─────────────────────────────────────────────────
+
+def _edit_tier(stdscr, config: GatewayConfig, provider_names: list[str], tier: str) -> bool:
+    """Pick a provider then a model for `tier`. Returns True if a change was applied."""
+    cur_prov, cur_model = _tier_current(config, tier)
+
+    prov_options = []
+    for name in provider_names:
+        prov = config.providers[name]
+        models = ", ".join(prov.available_models) if prov.available_models else "(no models listed)"
+        prov_options.append((f"{name:16s} {models}", name))
+
+    start = provider_names.index(cur_prov) if cur_prov in provider_names else 0
+    header = [
+        f"Tier '{tier}'  —  current: {_format_target(cur_prov, cur_model)}",
+        "Choose a provider:",
+        "",
+    ]
+    provider_name = _menu_select(stdscr, header, prov_options, index=start)
+    if provider_name is _CANCEL:
+        return False
+
+    prov = config.providers[provider_name]
+    model_options: list[tuple[str, object]] = [
+        (m + ("   (provider default)" if i == 0 else ""), m)
+        for i, m in enumerate(prov.available_models)
+    ]
+    if prov.available_models:
+        model_options.append(("Use provider default (first available model)", None))
+    model_options.append(("Custom model…", _CUSTOM))
+
+    midx = 0
+    if provider_name == cur_prov:
+        if cur_model is None and prov.available_models:
+            midx = len(prov.available_models)  # the explicit "provider default" row
+        else:
+            for i, (_, val) in enumerate(model_options):
+                if val == cur_model:
+                    midx = i
+                    break
+
+    header = [
+        f"Tier '{tier}'  —  provider: {provider_name}",
+        "Choose a model:",
+        "",
+    ]
+    selection = _menu_select(stdscr, header, model_options, index=midx)
+    if selection is _CANCEL:
+        return False
+
+    if selection is _CUSTOM:
+        text = _text_input(stdscr, f"Custom model name for {provider_name}: ")
+        if not text:
+            return False
+        model: str | None = text
+    else:
+        model = selection  # type: ignore[assignment]  # str or None
+
+    # Guard against creating an invalid route (no model + no fallback).
+    if model is None and not prov.available_models:
+        return False
+
+    _set_tier_route(config, tier, provider_name, model)
+    return True
+
+
+def _edit_loop(stdscr, config: GatewayConfig, config_path: str):
+    """Main TUI loop. Returns (outcome, reload_msg, saved_any)."""
+    try:
+        curses.curs_set(0)
+    except Exception:
+        pass
+    stdscr.keypad(True)
+
+    tiers = list(TIER_PATTERNS)
+    provider_names = list(config.providers)
+    index = 0
+    dirty = False
+    saved_any = False
+    reload_msg: str | None = None
+    status = ""
+
+    while True:
+        header = [
+            f"Flexgate config  —  {os.path.abspath(config_path)}",
+            "↑/↓ move · Enter edit tier · s save · q quit",
+            "",
+        ]
+        labels = []
+        for tier in tiers:
+            prov, model = _tier_current(config, tier)
+            labels.append(f"{tier:8s}  {_format_target(prov, model)}")
+        footer = [
+            "",
+            "● unsaved changes" if dirty else "○ no unsaved changes",
+            status,
+        ]
+        _menu_draw(stdscr, header, labels, index, footer)
+
+        key = stdscr.getch()
+        if key in (curses.KEY_UP, ord("k")):
+            index = (index - 1) % len(tiers)
+            status = ""
+        elif key in (curses.KEY_DOWN, ord("j")):
+            index = (index + 1) % len(tiers)
+            status = ""
+        elif key in (curses.KEY_ENTER, 10, 13):
+            if _edit_tier(stdscr, config, provider_names, tiers[index]):
+                dirty = True
+                prov, model = _tier_current(config, tiers[index])
+                status = f"Set {tiers[index]} → {_format_target(prov, model)}"
+            else:
+                status = ""
+        elif key == ord("s"):
+            if dirty:
+                save_config(config, config_path)
+                reload_msg = _signal_reload()
+                saved_any = True
+                dirty = False
+                status = "Saved" + (f" · {reload_msg}" if reload_msg else "")
+            else:
+                status = "No changes to save"
+        elif key in (ord("q"), 27):
+            if dirty:
+                ans = _confirm(stdscr, "Unsaved changes — save before quitting?")
+                if ans is True:
+                    save_config(config, config_path)
+                    reload_msg = _signal_reload()
+                    return ("saved", reload_msg, True)
+                if ans is False:
+                    return ("discarded", reload_msg, saved_any)
+                status = ""  # cancelled the quit
+                continue
+            return ("saved" if saved_any else "clean", reload_msg, saved_any)
+
+
+def cmd_config_edit(args: argparse.Namespace) -> None:
+    config_path = args.config
+    if not os.path.exists(config_path):
+        print(f"Config not found: {config_path}")
+        print("Run 'flexgate config init' first.")
+        sys.exit(1)
+
+    config = load_config(config_path)
+    if not config.providers:
+        print("No providers configured.")
+        print(f"Add providers to {config_path} or run 'flexgate settings import' first.")
+        sys.exit(1)
+
+    if curses is None:
+        print("Interactive editor requires the 'curses' module (unavailable on this platform).")
+        print("Use 'flexgate config set <tier> <provider> [model]' instead.")
+        sys.exit(1)
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("Interactive editor requires an interactive terminal (TTY).")
+        print("Use 'flexgate config set <tier> <provider> [model]' for non-interactive changes.")
+        sys.exit(1)
+
+    outcome, reload_msg, saved_any = curses.wrapper(_edit_loop, config, config_path)
+
+    if outcome == "saved":
+        print(f"Saved: {config_path}")
+        if reload_msg:
+            print(reload_msg)
+    elif outcome == "discarded":
+        if saved_any:
+            print(f"Saved earlier changes to {config_path}; discarded changes since last save.")
+            if reload_msg:
+                print(reload_msg)
+        else:
+            print("Discarded changes.")
+    else:
+        print("No changes.")
+
+
+# ── service subcommands ────────────────────────────────────────────
+
+def cmd_service_install(args: argparse.Namespace) -> None:
+    from flexgate.service import service_install
+    service_install(args.config, start=not getattr(args, "no_start", False))
+
+
+def cmd_service_uninstall(args: argparse.Namespace) -> None:
+    from flexgate.service import service_uninstall
+    service_uninstall()
+
+
+def cmd_service_start(args: argparse.Namespace) -> None:
+    from flexgate.service import service_start
+    service_start()
+
+
+def cmd_service_stop(args: argparse.Namespace) -> None:
+    from flexgate.service import service_stop
+    service_stop()
+
+
+def cmd_service_status(args: argparse.Namespace) -> None:
+    from flexgate.service import service_status
+    service_status()
+
+
+def cmd_service_help(args: argparse.Namespace) -> None:
+    from flexgate.service import service_help
+    service_help()
 
 
 # ── main ───────────────────────────────────────────────────────────
@@ -532,10 +886,25 @@ def main() -> None:
     cf_sub.add_parser("init", help="Create default config at ~/.flexgate/config.yaml")
     cf_sub.add_parser("show", help="Show current configuration")
     cf_sub.add_parser("path", help="Print config file path")
+    cf_sub.add_parser("edit", help="Interactively choose provider/model per tier (opus/sonnet/haiku)")
     cf_set = cf_sub.add_parser("set", help="Set route for a tier")
     cf_set.add_argument("tier", help="Tier: all, or comma-separated opus,sonnet,haiku")
     cf_set.add_argument("target", help="Provider name or model name")
     cf_set.add_argument("model", nargs="?", default=None, help="Model override (when target is a provider)")
+
+    # flexgate service ...
+    svc = sub.add_parser("service", help="Manage flexgate as a systemd user service")
+    svc_sub = svc.add_subparsers(dest="command")
+    svc_install = svc_sub.add_parser("install", help="Install + enable the systemd user service")
+    svc_install.add_argument(
+        "--no-start", action="store_true",
+        help="Install and enable the service but do not start it now"
+    )
+    svc_sub.add_parser("uninstall", help="Stop, disable and remove the systemd user service")
+    svc_sub.add_parser("start", help="Start the service")
+    svc_sub.add_parser("stop", help="Stop the service")
+    svc_sub.add_parser("status", help="Show service status")
+    svc_sub.add_parser("help", help="Show service command help")
 
     args = parser.parse_args()
 
@@ -575,11 +944,27 @@ def main() -> None:
             "init": cmd_config_init,
             "show": cmd_config_show,
             "set": cmd_config_set,
+            "edit": cmd_config_edit,
             "path": cmd_config_path,
         }
         handler = handlers.get(args.command)
         if not handler:
             cf.print_help()
+            sys.exit(1)
+        handler(args)
+
+    elif args.group == "service":
+        handlers = {
+            "install": cmd_service_install,
+            "uninstall": cmd_service_uninstall,
+            "start": cmd_service_start,
+            "stop": cmd_service_stop,
+            "status": cmd_service_status,
+            "help": cmd_service_help,
+        }
+        handler = handlers.get(args.command)
+        if not handler:
+            svc.print_help()
             sys.exit(1)
         handler(args)
 
