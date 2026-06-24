@@ -12,6 +12,7 @@ print a helpful message and exit non-zero.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -166,7 +167,64 @@ def _warn_if_port_busy(config_path: str) -> None:
 
 # ── commands ───────────────────────────────────────────────────────
 
-def service_install(config_path: str, start: bool = True) -> None:
+def _maybe_apply_claude_settings(config_path: str, *, skip: bool) -> None:
+    """If appropriate, offer to overwrite ~/.claude/settings.json.
+
+    - skip=True → no-op (used for --no-claude-settings flag and dev).
+    - Non-TTY stdin → no prompt; if the file is missing, create it via settings_apply
+      with the default "gateway" token; if it exists, leave it untouched.
+    - File does not exist → create it directly, no prompt, no backup.
+    - File exists, TTY → ask Yes/No. On Yes, back up the file and rewrite it,
+      preserving the existing ANTHROPIC_AUTH_TOKEN. On No, leave the file alone.
+    """
+    if skip:
+        return
+
+    from flexgate.settings import CLAUDE_DIR, settings_apply
+
+    settings_file = os.path.join(CLAUDE_DIR, "settings.json")
+
+    if not sys.stdin.isatty():
+        # Piped stdin: behave like the file-doesn't-exist case if the file is
+        # absent (i.e. create with default token); otherwise leave it alone.
+        if not os.path.exists(settings_file):
+            settings_apply(config_path)
+        return
+
+    if not os.path.exists(settings_file):
+        # First-time setup: create the file with the env block, no prompt.
+        settings_apply(config_path)
+        return
+
+    # File exists: read the existing token so we can preserve it.
+    existing_token = ""
+    try:
+        with open(settings_file) as f:
+            existing = json.load(f)
+        existing_token = (existing.get("env") or {}).get("ANTHROPIC_AUTH_TOKEN", "") or ""
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    try:
+        answer = input(
+            "A Claude Code settings.json already exists at ~/.claude/settings.json. "
+            "Overwrite it to point at the gateway? [Yes/No]: "
+        ).strip().lower()
+    except EOFError:
+        return
+
+    if answer not in ("y", "yes"):
+        return
+
+    settings_apply(config_path, auth_token=existing_token or None)
+
+
+def service_install(
+    config_path: str,
+    start: bool = True,
+    *,
+    no_claude_settings: bool = False,
+) -> None:
     _ensure_available()
 
     if not os.path.exists(config_path):
@@ -179,6 +237,8 @@ def service_install(config_path: str, start: bool = True) -> None:
         print(f"Config error: {e}")
         print("Fix the config before installing the service.")
         sys.exit(1)
+
+    _maybe_apply_claude_settings(config_path, skip=no_claude_settings)
 
     unit_dir = _systemd_user_dir()
     os.makedirs(unit_dir, exist_ok=True)
@@ -293,7 +353,10 @@ def service_help() -> None:
         """flexgate service — run flexgate as a systemd user service (Linux)
 
 Usage:
-  flexgate service install [--no-start]   Install + enable the user service (and start it)
+  flexgate service install [--no-start] [--no-claude-settings]
+                                        Install + enable the user service (and start it).
+                                        --no-claude-settings skips the prompt that
+                                        offers to rewrite ~/.claude/settings.json.
   flexgate service uninstall              Stop, disable and remove the service
   flexgate service start                  Start the service
   flexgate service stop                   Stop the service

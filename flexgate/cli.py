@@ -812,7 +812,11 @@ def cmd_config_edit(args: argparse.Namespace) -> None:
 
 def cmd_service_install(args: argparse.Namespace) -> None:
     from flexgate.service import service_install
-    service_install(args.config, start=not getattr(args, "no_start", False))
+    service_install(
+        args.config,
+        start=not getattr(args, "no_start", False),
+        no_claude_settings=getattr(args, "no_claude_settings", False),
+    )
 
 
 def cmd_service_uninstall(args: argparse.Namespace) -> None:
@@ -899,6 +903,10 @@ def main() -> None:
     svc_install.add_argument(
         "--no-start", action="store_true",
         help="Install and enable the service but do not start it now"
+    )
+    svc_install.add_argument(
+        "--no-claude-settings", action="store_true",
+        help="Skip the interactive prompt to overwrite ~/.claude/settings.json"
     )
     svc_sub.add_parser("uninstall", help="Stop, disable and remove the systemd user service")
     svc_sub.add_parser("start", help="Start the service")

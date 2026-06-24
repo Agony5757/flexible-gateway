@@ -130,9 +130,34 @@ def _infer_provider_name(base_url: str) -> str:
     return parsed.hostname or "unknown"
 
 
-def settings_apply(config_path: str) -> None:
-    """Apply config.yaml to ~/.claude/settings.json (with backup)."""
+def _build_new_settings(cfg: GatewayConfig, existing: dict, auth_token: str) -> dict:
+    """Return the new settings dict: preserved non-env fields + gateway env block."""
+    new_settings: dict = {}
+
+    for key in ("permissions", "skipDangerousModePermissionPrompt", "skipAutoPermissionPrompt"):
+        if key in existing:
+            new_settings[key] = existing[key]
+
+    cs = cfg.claude_settings
+    new_settings["env"] = {
+        "ANTHROPIC_BASE_URL": f"http://{cfg.server.host}:{cfg.server.port}",
+        "ANTHROPIC_AUTH_TOKEN": auth_token,
+        "API_TIMEOUT_MS": str(cs.api_timeout_ms),
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": cs.default_opus_model,
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": cs.default_sonnet_model,
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": cs.default_haiku_model,
+    }
+    return new_settings
+
+
+def settings_apply(config_path: str, *, auth_token: str | None = None) -> None:
+    """Apply config.yaml to ~/.claude/settings.json (with backup).
+
+    auth_token: value to write as ANTHROPIC_AUTH_TOKEN. If None, defaults to "gateway"
+    (preserves legacy behavior of this command for callers that do not pass a token).
+    """
     cfg = load_config(config_path)
+    effective_token = "gateway" if auth_token is None else auth_token
 
     settings_file = os.path.join(CLAUDE_DIR, "settings.json")
     if not os.path.exists(settings_file):
@@ -145,8 +170,7 @@ def settings_apply(config_path: str) -> None:
         shutil.copy2(settings_file, backup_path)
         print(f"Backup: {backup_path}")
 
-    # Build new settings
-    # Preserve existing non-env fields (permissions, skip_prompts, etc.)
+    # Read existing file (for field preservation)
     existing: dict = {}
     if os.path.exists(settings_file):
         try:
@@ -155,28 +179,13 @@ def settings_apply(config_path: str) -> None:
         except (json.JSONDecodeError, OSError):
             pass
 
-    new_settings: dict = {}
-
-    # Keep permissions and other fields
-    for key in ("permissions", "skipDangerousModePermissionPrompt", "skipAutoPermissionPrompt"):
-        if key in existing:
-            new_settings[key] = existing[key]
-
-    # Set env with gateway connection
-    cs = cfg.claude_settings
-    new_settings["env"] = {
-        "ANTHROPIC_BASE_URL": f"http://{cfg.server.host}:{cfg.server.port}",
-        "ANTHROPIC_AUTH_TOKEN": "gateway",
-        "API_TIMEOUT_MS": str(cs.api_timeout_ms),
-        "ANTHROPIC_DEFAULT_OPUS_MODEL": cs.default_opus_model,
-        "ANTHROPIC_DEFAULT_SONNET_MODEL": cs.default_sonnet_model,
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL": cs.default_haiku_model,
-    }
+    new_settings = _build_new_settings(cfg, existing, effective_token)
 
     with open(settings_file, "w") as f:
         json.dump(new_settings, f, indent=2)
         f.write("\n")
 
+    cs = cfg.claude_settings
     print(f"Applied: {settings_file}")
     print(f"  ANTHROPIC_BASE_URL = http://{cfg.server.host}:{cfg.server.port}")
     print(f"  OPUS_MODEL  = {cs.default_opus_model}")
