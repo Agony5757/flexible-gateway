@@ -727,6 +727,49 @@ def cmd_service_help(args: argparse.Namespace) -> None:
     service_help()
 
 
+# ── default action (no subcommand) ────────────────────────────────
+
+def cmd_default(args: argparse.Namespace) -> None:
+    """Smart default when `flexgate` is invoked with no subcommand.
+
+    - service running        → show status (same as `flexgate service status`)
+    - service installed      → show status + hint how to start it
+    - otherwise (fresh boot) → initialise config + hint how to edit & install
+    """
+    from flexgate.service import service_active, service_installed, service_status
+
+    config_path = args.config
+
+    if service_active() or service_installed():
+        service_status()
+        try:
+            config = load_config(config_path)
+        except Exception as e:
+            print(f"\nRoutes unavailable: could not load {config_path}: {e}")
+            return
+        _print_active_routes(config)
+        if not service_active():
+            print("\nThe service is installed but not running.")
+            print("Start it with:  flexgate service start")
+        else:
+            print("\nThe service is running.")
+        print("Stop/restart with:  flexgate service stop|restart")
+        return
+
+    # Fresh / not-yet-installed: guide the user through first-time setup.
+    print("Welcome to Flexgate! No service is installed yet.\n")
+    if not os.path.exists(config_path):
+        with open(config_path, "w") as f:
+            f.write(DEFAULT_CONFIG_TEMPLATE)
+        print(f"Created a default config at: {config_path}")
+    else:
+        print(f"Found an existing config at: {config_path}")
+    print("Open it to add your API keys and providers, or edit interactively with:")
+    print("  flexgate config edit")
+    print("\nWhen ready, install and start the persistent service with:")
+    print("  flexgate service install")
+
+
 # ── main ───────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -854,8 +897,8 @@ def main() -> None:
         }
         handler = handlers.get(args.command)
         if not handler:
-            cf.print_help()
-            sys.exit(1)
+            # `flexgate config` with no subcommand → interactive editor
+            handler = cmd_config_edit
         handler(args)
 
     elif args.group == "service":
@@ -876,8 +919,7 @@ def main() -> None:
         handler(args)
 
     else:
-        parser.print_help()
-        sys.exit(1)
+        cmd_default(args)
 
 
 if __name__ == "__main__":

@@ -119,6 +119,18 @@ def _service_active() -> bool:
     ).returncode == 0
 
 
+def service_active() -> bool:
+    """True iff the systemd user service is currently active.
+
+    Returns False (instead of raising) when systemd is unavailable, so
+    callers can use it for state detection on any platform.
+    """
+    available, _ = _systemd_user_available()
+    if not available:
+        return False
+    return _service_active()
+
+
 def _service_main_pid() -> int | None:
     result = _systemctl(
         "show",
