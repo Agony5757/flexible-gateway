@@ -12,6 +12,11 @@ Claude Code → localhost:8765 → opus  → z.ai (glm-5.1)
                            → haiku  → minimax (MiniMax-M3)
 ```
 
+> **运行原则：service > gateway。** Linux 上的持久化 serve 只由 systemd 用户服务
+> `flexgate.service` 管理。`gateway run` 仅用于前台调试；旧的
+> `gateway start|stop|restart|status` 已改为 service 的兼容别名，不再创建第二套
+> PID/guardian 后台进程，因此不会再与 service 抢占同一端口。
+
 ## 安装
 
 ```bash
@@ -19,19 +24,19 @@ cd flexible-gateway
 uv sync
 ```
 
-安装后通过 `uv run flexgate` 运行：
+源码开发时可以前台运行：
 
 ```bash
 uv run flexgate config init
-uv run flexgate gateway start
+uv run flexgate gateway run
 ```
 
-如果希望全局使用 `flexgate` 命令（推荐，可在任意目录运行）：
+日常使用推荐全局安装，并交给 systemd 用户服务管理：
 
 ```bash
 uv tool install -e .
 flexgate config init
-flexgate gateway start
+flexgate service install
 ```
 
 ## 快速开始
@@ -44,67 +49,69 @@ flexgate config init
 # 2. 从已有 Claude Code 配置自动导入（可选）
 flexgate settings import         # 读取 ~/.claude/settings.json* 中的凭证
 
-# 3. 启动网关
-flexgate gateway start
+# 3. 安装并启动唯一的持久化服务
+# install 会询问是否将 Claude Code settings.json 指向本地网关
+flexgate service install
 
-# 4. 将 Claude Code 指向网关
-flexgate settings apply          # 自动修改 ~/.claude/settings.json
+# 4. 如果安装时跳过了 settings 修改，可稍后手动应用
+flexgate settings apply
 ```
 
 ## 命令参考
 
-### 网关管理
+### 服务管理（默认持久化模式）
+
+systemd **用户服务**是 Linux 上唯一推荐的持久化运行方式，负责开机/登录自启、崩溃重启、日志和进程生命周期。
 
 ```bash
-flexgate gateway start           # 启动后台服务（含端口守护进程 + 上游连通性预检）
-flexgate gateway stop            # 停止服务
-flexgate gateway restart         # 重启服务
-flexgate gateway status          # 查看运行状态和当前路由表
-flexgate gateway run             # 前台运行（调试用）
-flexgate gateway check           # 仅运行上游连通性检测，不启动服务
+flexgate service install             # 安装、启用并立即启动
+flexgate service install --no-start  # 仅安装并启用，不立即启动
+flexgate service start               # 启动；自动修复旧格式或失效的 unit
+flexgate service stop                # 停止
+flexgate service restart             # 重启
+flexgate service reload              # 热重载；host/port 变化时自动安全重启
+flexgate service status              # 查看 systemd 状态和当前路由表
+flexgate service uninstall           # 停止、禁用并删除 unit
 ```
 
-启动选项：
-- `--no-guardian` 跳过端口守护进程
-- `--guardian-interval N` 端口检测间隔秒数（默认 3.0）
-- `--no-verify` 跳过上游 provider 连通性预检
-- `--verify-timeout N` 每个 provider 的连通性检测超时秒数（默认 15.0）
+说明：
+- unit 写入 `~/.config/systemd/user/flexgate.service`，直接运行前台 server，由 systemd 监督（`Type=simple`、`Restart=on-failure`）。
+- `install` 会执行 `loginctl enable-linger`，使服务在未登录时仍保持运行并随开机启动。
+- `install --no-start` 不会修改 Claude Code settings，避免把客户端指向尚未运行的 endpoint。
+- unit 只能引用持久化配置路径；为避免重启后失效，`/tmp` 下的配置会被拒绝。
+- `start`/`restart` 会清理旧 PID/guardian 残留、修复旧 unit 或已失效的配置路径，并在端口被其他进程占用时拒绝启动。
+- 若升级时检测到旧版后台 gateway 仍在运行，会先准备好 systemd unit，但不会强杀正在服务的进程；按提示执行一次 `flexgate gateway stop`，再执行 `flexgate service start` 完成切换。
+- unit 设置了启动速率限制，永久配置错误不会再无限快速重启。
+- `service reload` 和 `config set/edit` 会在仅路由变化时发送 SIGUSR1；如果 endpoint 变化，则先检查再 restart。若只改 host、仍复用当前 port，为避免误停服务会要求先执行 `service stop`，再执行 `service start`。
+- 查看日志：`journalctl --user -u flexgate -e`。
 
 ### 上游连通性预检
 
-`gateway start` 在启动后台进程之前，会向每个 **被路由引用的 `(provider, model)` 组合**
-发送一次 `POST /v1/messages`（`max_tokens=1`，消耗约 1~2 token），用于在第一条真实
-请求到达前提前发现以下问题：
+运行 `flexgate gateway check` 会向每个 **被路由引用的 `(provider, model)` 组合**
+发送一次 `POST /v1/messages`（`max_tokens=1`，消耗约 1~2 token），用于主动检查：
 
 - DNS / TCP / TLS 不可达（`base_url` 写错、网络不通）
 - API key 无效或过期（HTTP 401 / 403）
 - 仍是默认占位符（如 `your-zai-api-key`）
 - Provider 侧 5xx 故障
 
-任意一项失败都会拒绝启动，提示具体错误。要跳过此检查使用 `--no-verify`，或单独
-运行 `flexgate gateway check` 做一次诊断。
+可通过 `--verify-timeout N` 调整每个 provider 的超时时间（默认 15 秒）。
 
-### 服务管理（systemd 用户服务）
+### Gateway 命令（前台调试与兼容入口）
 
-将网关安装为 systemd **用户服务**，实现开机/登录自启与崩溃自动重启。适用于 Linux（需要 systemd 用户实例）。
+`gateway` 不再拥有独立的后台模式：
 
 ```bash
-flexgate service install             # 安装并启用用户服务（默认立即启动）
-flexgate service install --no-start  # 仅安装并启用，不立即启动
-flexgate service uninstall           # 停止、禁用并删除服务
-flexgate service start               # 启动服务
-flexgate service stop                # 停止服务
-flexgate service status              # 查看服务状态
-flexgate service help                # 查看服务命令帮助
+flexgate gateway run                 # 单个前台进程，仅用于开发/调试
+flexgate gateway check               # 上游 provider 连通性检测
+flexgate gateway start               # 兼容别名 → service start
+flexgate gateway stop                # 兼容别名 → service stop
+flexgate gateway restart             # 兼容别名 → service restart
+flexgate gateway status              # 兼容别名 → service status
 ```
 
-说明：
-- 单元文件写入 `~/.config/systemd/user/flexgate.service`，通过 `flexgate gateway run` 在前台运行并交由 systemd 托管（`Type=simple`、`Restart=on-failure`）。
-- `install` 会执行 `loginctl enable-linger`，使服务在未登录时仍保持运行并随开机启动。
-- 热重载配置（无需重启）：`systemctl --user reload flexgate`（发送 SIGUSR1，等价于编辑配置后的自动重载）。
-- 查看日志：`journalctl --user -u flexgate -e`。
-
-> **注意**：systemd 服务与 `flexgate gateway start` 会绑定同一端口，二者只能选其一，不要同时使用。
+非 systemd 环境只能使用 `gateway run` 前台运行。`--port PORT` 也只对
+`gateway run` 生效；持久化服务的端口必须写入 `server.port`。
 
 ### 配置管理
 
@@ -173,18 +180,22 @@ flexgate settings apply          # 将 config.yaml 配置写入 ~/.claude/settin
 ### 全局参数
 
 - `--config PATH` 指定配置文件（默认 `~/.flexgate/config.yaml`）
-- `--port PORT` 覆盖配置文件中的端口（仅 gateway 子命令）
+- `--port PORT` 覆盖配置文件中的端口（仅 `gateway run`）
 
 ## 配置文件
 
-所有运行时文件存放在 `~/.flexgate/` 目录下：
+主要运行时资源：
 
 | 文件 | 说明 |
 |------|------|
 | `~/.flexgate/config.yaml` | 主配置文件 |
-| `~/.flexgate/flexgate.pid` | 网关进程 PID |
-| `~/.flexgate/flexgate.guardian.pid` | 守护进程 PID |
-| `~/.flexgate/flexgate.log` | 运行日志 |
+| `~/.flexgate/service-state.json` | 最近一次成功启动所应用的 config 路径与 endpoint |
+| `~/.config/systemd/user/flexgate.service` | 唯一的持久化服务 unit |
+| systemd journal | 服务日志（`journalctl --user -u flexgate`） |
+
+旧版本的 `~/.flexgate/flexgate.pid`、`flexgate.guardian.pid` 和
+`flexgate.log` 不再属于当前运行架构；service 启动时会安全清理 PID 残留，
+历史日志文件可按需手动删除。
 
 运行 `flexgate config init` 创建默认配置，或手动编辑：
 
@@ -295,7 +306,8 @@ routes:                          # 从上到下匹配，首个命中生效
 
 ## 注意事项
 
-- 配置文件和运行时文件统一存放在 `~/.flexgate/`，全局安装后可在任意目录使用
+- 配置默认存放在 `~/.flexgate/`，全局安装后可在任意目录管理 systemd 用户服务
+- Linux 持久化运行统一使用 `flexgate service`；不要额外启动独立后台进程
 - `config.yaml` 已加入 `.gitignore`，不会被提交到 Git
 - 请使用 `config.yaml.template` 作为参考模板
 - 如果 API 密钥曾经被推送到远程仓库，请立即轮换（rotate）该密钥

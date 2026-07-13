@@ -13,30 +13,40 @@ Flexgate is a local Anthropic-compatible API gateway (~1800 lines of Python). It
 uv sync                                    # install dependencies
 uv run flexgate config init                 # create default config
 uv run flexgate gateway run                 # foreground run (debug)
-uv run flexgate gateway start               # background with guardian
 
 # Global install (recommended for daily use)
 uv tool install -e .
-flexgate gateway start
+flexgate service install                    # install + enable + start systemd user service
 
 # Lifecycle
-flexgate gateway {start|stop|restart|status|run|check}
+flexgate service {install|start|stop|restart|reload|status|uninstall}
+flexgate gateway run                        # foreground/debug only
+flexgate gateway check                      # provider connectivity diagnostics
 
 # Config
-flexgate config {init|show|set|path}
+flexgate config {init|show|set|path|edit}
 flexgate config set all <provider>          # batch-set all tiers
 flexgate config set sonnet minimax MiniMax-M3
+flexgate config edit                        # interactive curses TUI: pick provider/model per tier
 
 # Claude Code settings bridge
 flexgate settings import                    # read from ~/.claude/settings.json
 flexgate settings apply                     # write ANTHROPIC_BASE_URL → localhost
 
 # Hot reload (no restart needed)
-# config set already sends SIGUSR1 to running gateway
-kill -USR1 $(cat ~/.flexgate/flexgate.pid)  # manual trigger
+# config set already reloads the active service; endpoint changes trigger restart
+flexgate service reload
 ```
 
 There is no test suite, linter, or CI configured.
+
+## Runtime authority
+
+The systemd user service is the only persistent serving mode on Linux.
+`gateway start|stop|restart|status` are compatibility aliases for the matching
+service commands and must never create a separate PID-file daemon.
+`gateway run` remains a single foreground process for development or systems
+without a systemd user instance.
 
 ## Architecture
 
@@ -54,27 +64,35 @@ Claude Code → POST /v1/messages (model="claude-sonnet-4-6")
 
 | File | Role |
 |------|------|
-| `cli.py` | argparse CLI, PID management, daemon subprocess spawning, guardian launch |
+| `cli.py` | argparse CLI; service lifecycle commands, gateway compatibility aliases, config/settings commands |
 | `config.py` | Pydantic-like dataclasses (`GatewayConfig`, `ProviderConfig`, `RouteConfig`, `ScheduleEntry`), YAML load/save, `TIER_PATTERNS` regex map |
 | `router.py` | `resolve(config, model)` — schedule-first then default routes, first regex match wins |
 | `proxy.py` | `handle_request()` — httpx async proxy, SSE streaming + JSON pass-through |
 | `server.py` | Starlette app creation, `POST /v1/messages` endpoint, `SIGUSR1` lifespan reload |
 | `main.py` | Thin bootstrap: load config → create app → run uvicorn |
-| `guardian.py` | Background port monitor using `/proc/net/tcp` and `/proc/<pid>/fd` (Linux-only) |
+| `service.py` | Authoritative systemd user-service install/start/stop/restart/reload/status and legacy PID migration |
+| `guardian.py` | Legacy port/PID helper; no longer owns persistent process supervision |
 | `healthcheck.py` | Pre-flight `POST /v1/messages` (max_tokens=1) to each referenced (provider, model) pair |
 | `settings.py` | Bridges `config.yaml` ↔ `~/.claude/settings.json` (import credentials, apply config) |
 
 ### Key design points
 
 - **Regex-first routing**: Routes are regex patterns matched against the `model` field in the request body. First match wins. A catch-all `".*"` pattern at the end handles fallback.
+- **Model resolution & `available_models` fallback**: A route may omit `model`; `router.resolve()` then falls back to the provider's first `available_models` entry, so `model_override` handed to the proxy is always a concrete name. `config._parse_routes` rejects routes that omit `model` on a provider with no `available_models` — so adding a provider without models requires an explicit `model` on every route using it.
+- **Proxy rewrite contract** (`proxy.py`): the upstream request gets the provider's `x-api-key` plus a fixed header set, and the JSON `model` field is rewritten only when the route set an override. Streaming responses are forwarded as raw bytes (`aiter_bytes`), never parsed.
+- **Multimodal degradation**: `MULTIMODAL_MODELS` (currently `{"MiniMax-M3"}`) is the allowlist. Requests carrying image blocks aimed at any other model have images stripped and a `[flexgate]` text note injected into both the outgoing request and the returned response, so non-multimodal backends don't 4xx.
 - **Schedule-based overrides**: Optional time windows (e.g. 22:00-06:00) override default routes. Overnight wrap is supported.
-- **Hot config reload**: `SIGUSR1` tells the running gateway to re-read `config.yaml` without restart.
-- **Port guardian**: Separate process monitors port 8765, detects conflicts via Linux proc filesystem.
+- **Service-first lifecycle**: `flexgate.service` is the sole persistent runtime. systemd owns restart, boot startup, logs, and process state.
+- **Hot config reload**: `flexgate service reload` sends `SIGUSR1` for routing-only changes and restarts when the applied config path or endpoint changed. Same-port host changes require an explicit stop/start.
+- **Conflict prevention**: Service startup removes stale legacy PID files, stops verified legacy Flexgate daemons, validates the configured port, and rejects temporary config paths.
 - **Tier patterns** in `config.py`: `opus`, `sonnet`, `haiku` map to regex patterns for CLI shorthand (`config set sonnet ...`).
 
 ### Config location
 
-All runtime files live in `~/.flexgate/`: `config.yaml`, `flexgate.pid`, `flexgate.guardian.pid`, `flexgate.log`. Override with `FLEXGATE_CONFIG` env var.
+Config lives at `~/.flexgate/config.yaml` (override with `FLEXGATE_CONFIG`).
+The persistent unit lives at `~/.config/systemd/user/flexgate.service`; logs are
+in the systemd user journal. `~/.flexgate/service-state.json` records the last
+successfully applied config path and endpoint. PID/guardian files are legacy artifacts only.
 
 ## Python Style
 
