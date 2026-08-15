@@ -4,3 +4,4 @@ uv.lock
 *.pid
 config.yaml
 .github/copilot-instructions.md
+dist/
