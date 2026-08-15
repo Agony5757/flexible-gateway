@@ -1,7 +1,11 @@
 [project]
 name = "flexgate"
-version = "0.1.0"
+description = "Flexible local API gateway for Claude Code — route models to different providers"
+readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "agony" }]
+dynamic = ["version"]
 dependencies = [
     "starlette>=0.37",
     "uvicorn[standard]>=0.29",
@@ -9,12 +13,20 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Agony5757/flexible-gateway"
+Repository = "https://github.com/Agony5757/flexible-gateway"
+Issues = "https://github.com/Agony5757/flexible-gateway/issues"
+
 [project.scripts]
 flexgate = "flexgate.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "flexgate/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["flexgate"]

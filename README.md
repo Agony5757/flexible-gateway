@@ -12,9 +12,8 @@ Claude Code → localhost:8765 → opus  → z.ai (glm-5.1)
                            → haiku  → minimax (MiniMax-M3)
 ```
 
-> **运行原则：service > gateway。** Linux 上的持久化 serve 只由 systemd 用户服务
-> `flexgate.service` 管理。`gateway run` 仅用于前台调试；旧的
-> `gateway start|stop|restart|status` 已改为 service 的兼容别名，不再创建第二套
+> **运行原则：持久化只走 service。** Linux 上的持久化 serve 只由 systemd 用户服务
+> `flexgate.service` 管理。`flexgate run` 仅用于前台调试，不再创建第二套
 > PID/guardian 后台进程，因此不会再与 service 抢占同一端口。
 
 ## 安装
@@ -28,16 +27,18 @@ uv sync
 
 ```bash
 uv run flexgate config init
-uv run flexgate gateway run
+uv run flexgate run
 ```
 
-日常使用推荐全局安装，并交给 systemd 用户服务管理：
+日常使用推荐从 PyPI 全局安装，并交给 systemd 用户服务管理：
 
 ```bash
-uv tool install -e .
+pipx install flexgate        # 或: uv tool install flexgate / pip install flexgate
 flexgate config init
 flexgate service install
 ```
+
+从源码安装则用：`uv tool install -e .`
 
 ## 快速开始
 
@@ -80,14 +81,34 @@ flexgate service uninstall           # 停止、禁用并删除 unit
 - `install --no-start` 不会修改 Claude Code settings，避免把客户端指向尚未运行的 endpoint。
 - unit 只能引用持久化配置路径；为避免重启后失效，`/tmp` 下的配置会被拒绝。
 - `start`/`restart` 会清理旧 PID/guardian 残留、修复旧 unit 或已失效的配置路径，并在端口被其他进程占用时拒绝启动。
-- 若升级时检测到旧版后台 gateway 仍在运行，会先准备好 systemd unit，但不会强杀正在服务的进程；按提示执行一次 `flexgate gateway stop`，再执行 `flexgate service start` 完成切换。
+- 若升级时检测到旧版后台 gateway 仍在运行，会先准备好 systemd unit，但不会强杀正在服务的进程；按提示手动 `kill <PID>` 停掉旧进程，再执行 `flexgate service start` 完成切换。
 - unit 设置了启动速率限制，永久配置错误不会再无限快速重启。
 - `service reload` 和 `config set/edit` 会在仅路由变化时发送 SIGUSR1；如果 endpoint 变化，则先检查再 restart。若只改 host、仍复用当前 port，为避免误停服务会要求先执行 `service stop`，再执行 `service start`。
 - 查看日志：`journalctl --user -u flexgate -e`。
 
+### 版本与升级
+
+```bash
+flexgate --version               # 打印版本号（service status / 裸 flexgate 也会显示）
+flexgate doctor                  # 只读体检：Python、PyPI 新版、配置 schema、端口、systemd、Claude settings
+flexgate doctor --offline        # 跳过 PyPI 检查
+flexgate update                  # 一键升级：pip/pipx/uv 升级包 + 迁移配置 schema + 热重载服务
+flexgate update --check          # 只报告将要做什么，不改动
+flexgate update --config-only    # 只迁移配置，不升级包
+```
+
+升级策略：
+
+- **包升级**：版本号唯一来源是 `flexgate/__init__.py`；发布到 PyPI 后，`flexgate update`
+  自动检测安装方式（pipx / uv tool / pip）并升级到最新 release。
+- **配置迁移**：`config.yaml` 带 `config_version` 标记。每次 schema 变化在
+  `flexgate/migrate.py` 的 `MIGRATIONS` 中登记一条 N → N+1 规则，升级时逐级走完整个迁移链。
+  迁移前自动备份为 `config.yaml.bak-<时间戳>`；配置比当前 flexgate 更新时会被拒绝并提示先升级。
+- **自检**：发版或排障时跑 `flexgate doctor`，有 FAIL 项时退出码为 1，可直接用于 CI 门禁。
+
 ### 上游连通性预检
 
-运行 `flexgate gateway check` 会向每个 **被路由引用的 `(provider, model)` 组合**
+运行 `flexgate check` 会向每个 **被路由引用的 `(provider, model)` 组合**
 发送一次 `POST /v1/messages`（`max_tokens=1`，消耗约 1~2 token），用于主动检查：
 
 - DNS / TCP / TLS 不可达（`base_url` 写错、网络不通）
@@ -97,21 +118,17 @@ flexgate service uninstall           # 停止、禁用并删除 unit
 
 可通过 `--verify-timeout N` 调整每个 provider 的超时时间（默认 15 秒）。
 
-### Gateway 命令（前台调试与兼容入口）
+### 前台调试与连通性检查
 
-`gateway` 不再拥有独立的后台模式：
+`run` / `check` 是独立的顶层调试命令，不属于持久化服务模式：
 
 ```bash
-flexgate gateway run                 # 单个前台进程，仅用于开发/调试
-flexgate gateway check               # 上游 provider 连通性检测
-flexgate gateway start               # 兼容别名 → service start
-flexgate gateway stop                # 兼容别名 → service stop
-flexgate gateway restart             # 兼容别名 → service restart
-flexgate gateway status              # 兼容别名 → service status
+flexgate run                       # 单个前台进程，仅用于开发/调试
+flexgate check                     # 上游 provider 连通性检测
 ```
 
-非 systemd 环境只能使用 `gateway run` 前台运行。`--port PORT` 也只对
-`gateway run` 生效；持久化服务的端口必须写入 `server.port`。
+非 systemd 环境只能使用 `flexgate run` 前台运行。`--port PORT` 也只对
+`run` 生效；持久化服务的端口必须写入 `server.port`。
 
 ### 配置管理
 
@@ -180,7 +197,7 @@ flexgate settings apply          # 将 config.yaml 配置写入 ~/.claude/settin
 ### 全局参数
 
 - `--config PATH` 指定配置文件（默认 `~/.flexgate/config.yaml`）
-- `--port PORT` 覆盖配置文件中的端口（仅 `gateway run`）
+- `--port PORT` 覆盖配置文件中的端口（仅 `flexgate run`）
 
 ## 配置文件
 

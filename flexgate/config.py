@@ -4,6 +4,8 @@ import os
 import re
 from dataclasses import dataclass, field
 
+from flexgate.migrate import CURRENT_CONFIG_VERSION, detect_config_version
+
 FLEXGATE_HOME = os.path.expanduser("~/.flexgate")
 
 
@@ -53,6 +55,12 @@ class ClaudeSettings:
 
 
 @dataclass
+class InfisicalConfig:
+    project_id: str = ""
+    env: str = "dev"
+
+
+@dataclass
 class ScheduleEntry:
     name: str
     start_minutes: int
@@ -67,6 +75,7 @@ class GatewayConfig:
     routes: list[RouteConfig] = field(default_factory=list)
     schedule: list[ScheduleEntry] = field(default_factory=list)
     claude_settings: ClaudeSettings = field(default_factory=ClaudeSettings)
+    infisical: InfisicalConfig = field(default_factory=InfisicalConfig)
 
 
 def _parse_hhmm(value: str) -> int:
@@ -112,6 +121,13 @@ def load_config(path: str | None = None) -> GatewayConfig:
 
     if not isinstance(raw, dict):
         raise ValueError(f"Config file {path} must be a YAML mapping")
+
+    config_version = detect_config_version(raw)
+    if config_version > CURRENT_CONFIG_VERSION:
+        raise ValueError(
+            f"{path} was written by a newer flexgate (config_version {config_version} > "
+            f"{CURRENT_CONFIG_VERSION}). Run 'flexgate update' to upgrade."
+        )
 
     cfg = GatewayConfig()
 
@@ -159,6 +175,13 @@ def load_config(path: str | None = None) -> GatewayConfig:
             api_timeout_ms=cs.get("api_timeout_ms", cfg.claude_settings.api_timeout_ms),
         )
 
+    inf = raw.get("infisical", {})
+    if inf:
+        cfg.infisical = InfisicalConfig(
+            project_id=str(inf.get("project_id", "")),
+            env=str(inf.get("env", "dev")),
+        )
+
     return cfg
 
 
@@ -183,6 +206,7 @@ def save_config(cfg: GatewayConfig, path: str | None = None) -> None:
         path = get_default_config_path()
 
     data: dict = {
+        "config_version": CURRENT_CONFIG_VERSION,
         "server": {
             "host": cfg.server.host,
             "port": cfg.server.port,
@@ -196,6 +220,12 @@ def save_config(cfg: GatewayConfig, path: str | None = None) -> None:
         },
         "routes": _serialize_routes(cfg.routes),
     }
+
+    if cfg.infisical.project_id:
+        data["infisical"] = {
+            "project_id": cfg.infisical.project_id,
+            "env": cfg.infisical.env,
+        }
 
     for name, prov in cfg.providers.items():
         entry: dict = {
@@ -252,6 +282,17 @@ claude_settings:
   default_sonnet_model: "claude-sonnet-4-6"
   default_haiku_model: "claude-haiku-4-5"
   api_timeout_ms: 3000000
+
+# Infisical secret sync (optional): enables `flexgate sync` to pull provider
+# api_keys from Infisical. Each provider is a folder under /providers named
+# exactly after the provider, holding an API_KEY secret
+# (e.g. /providers/minimax-tmy/API_KEY). An optional MODELS secret holds
+# comma-separated model names. New folders are auto-imported by matching
+# their name prefix against known base_urls (see KNOWN_BASE_URLS in
+# flexgate/registry.py); unrecognized prefixes produce a warning.
+# infisical:
+#   project_id: "your-infisical-project-id"
+#   env: "dev"
 
 # Routes are matched top-to-bottom; first match wins.
 # `model:` is optional — when omitted, the provider's first available_models

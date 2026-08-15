@@ -155,7 +155,7 @@ class PortGuardian:
             if not free:
                 # Also print to stderr so it surfaces in CLI output
                 sys.stderr.write(f"[Guardian] ERROR: {reason}\n")
-                sys.stderr.write("[Guardian] Please stop that process first, then run 'flexgate gateway start' again.\n")
+                sys.stderr.write("[Guardian] Please stop that process first, then run 'flexgate service start' again.\n")
                 sys.stderr.flush()
                 _remove_guardian_pid(pid_path)
                 sys.exit(1)

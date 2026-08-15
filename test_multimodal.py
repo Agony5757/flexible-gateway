@@ -10,26 +10,37 @@ import httpx
 
 IMAGE_PATH = Path(__file__).parent / "test.png"
 
+# (provider name in ~/.flexgate/config.yaml, model to test). API keys are read
+# from the flexgate config at runtime — never hardcode keys here.
 PROVIDERS = [
-    {
-        "name": "xiaomi (mimo-v2.5-pro)",
-        "base_url": "https://token-plan-cn.xiaomimimo.com/anthropic",
-        "api_key": "tp-c4mwrxdzo5i8ptd31llrnag70dmi1r27nwguuakcfigizghh",
-        "model": "mimo-v2.5-pro",
-    },
-    {
-        "name": "minimax (MiniMax-M3)",
-        "base_url": "https://api.minimaxi.com/anthropic",
-        "api_key": "sk-cp-O3ESr5K0P2U0wExk5pEKipPPshT7g46zOh4KwYtXnD99ol0OU4MLH-ujUZ97HGJDXrX35NL0QVfPQX9HogEQ-60gsrRbHI3LEYuCAQTcH1qL-d8TjdEeyGE",
-        "model": "MiniMax-M3",
-    },
-    {
-        "name": "zai (glm-5.1)",
-        "base_url": "https://api.z.ai/api/anthropic",
-        "api_key": "e37b1f9cb583455392ad83b5475d4efe.5BEcmDRG7YXOfNgN",
-        "model": "glm-5.1",
-    },
+    {"provider": "xiaomi", "model": "mimo-v2.5-pro"},
+    {"provider": "minimax", "model": "MiniMax-M3"},
+    {"provider": "zai", "model": "glm-5.1"},
 ]
+
+
+def _load_providers() -> list[dict]:
+    import yaml
+
+    config_path = Path.home() / ".flexgate" / "config.yaml"
+    with open(config_path) as f:
+        raw = yaml.safe_load(f)
+    providers = []
+    for spec in PROVIDERS:
+        entry = (raw.get("providers") or {}).get(spec["provider"])
+        if not entry:
+            print(f"Skipping {spec['provider']}: not found in {config_path}")
+            continue
+        providers.append({
+            "name": f"{spec['provider']} ({spec['model']})",
+            "base_url": entry["base_url"],
+            "api_key": entry["api_key"],
+            "model": spec["model"],
+        })
+    if not providers:
+        print(f"No testable providers found in {config_path}")
+        sys.exit(1)
+    return providers
 
 
 async def test_provider(client: httpx.AsyncClient, provider: dict, image_b64: str) -> None:
@@ -103,7 +114,7 @@ async def main():
     print(f"Image: {IMAGE_PATH} ({IMAGE_PATH.stat().st_size} bytes, base64 len={len(image_b64)})")
 
     async with httpx.AsyncClient() as client:
-        tasks = [test_provider(client, p, image_b64) for p in PROVIDERS]
+        tasks = [test_provider(client, p, image_b64) for p in _load_providers()]
         await asyncio.gather(*tasks)
 
     print(f"\n{'='*60}")

@@ -14,6 +14,7 @@ except ImportError:  # pragma: no cover - curses is unavailable on some platform
 from flexgate.config import (
     GatewayConfig,
     RouteConfig,
+    CURRENT_CONFIG_VERSION,
     DEFAULT_CONFIG_TEMPLATE,
     TIER_PATTERNS,
     get_default_config_path,
@@ -21,76 +22,18 @@ from flexgate.config import (
     load_config,
     save_config,
 )
+from flexgate import __version__
 from flexgate.healthcheck import check_providers, print_results
 from flexgate.main import run_server
 
 PATTERN_TIERS = {v: k for k, v in TIER_PATTERNS.items()}
 
-# ── gateway subcommands ────────────────────────────────────────────
+# ── run / check (foreground debugging) ─────────────────────────────
 
 def _service_config_arg(args: argparse.Namespace) -> str | None:
     if getattr(args, "config_explicit", False):
         return args.config
     return None
-
-
-def _gateway_service_alias(command: str) -> None:
-    print(
-        f"Note: 'flexgate gateway {command}' is a compatibility alias for "
-        f"'flexgate service {command}'."
-    )
-
-
-def _reject_persistent_port_override(args: argparse.Namespace) -> None:
-    if args.port is None:
-        return
-    print("--port is only supported by 'flexgate gateway run'.")
-    print("For the persistent service, set server.port in config.yaml and restart the service.")
-    sys.exit(2)
-
-
-def cmd_gateway_start(args: argparse.Namespace) -> None:
-    from flexgate.service import service_start
-
-    _gateway_service_alias("start")
-    if getattr(args, "no_guardian", False) or getattr(args, "guardian_interval", 3.0) != 3.0:
-        print("Legacy guardian options are ignored; systemd now owns process supervision.")
-    _reject_persistent_port_override(args)
-    service_start(
-        _service_config_arg(args),
-        install_if_missing=True,
-    )
-
-
-def cmd_gateway_stop(args: argparse.Namespace) -> None:
-    from flexgate.service import service_stop
-
-    _gateway_service_alias("stop")
-    service_stop()
-
-
-def cmd_gateway_restart(args: argparse.Namespace) -> None:
-    from flexgate.service import service_restart
-
-    _gateway_service_alias("restart")
-    _reject_persistent_port_override(args)
-    service_restart(
-        _service_config_arg(args),
-        install_if_missing=True,
-    )
-
-
-def cmd_gateway_status(args: argparse.Namespace) -> None:
-    from flexgate.service import service_status
-
-    _gateway_service_alias("status")
-    config_path = service_status() or args.config
-    try:
-        config = load_config(config_path)
-    except Exception as e:
-        print(f"\nRoutes unavailable: could not load {config_path}: {e}")
-        return
-    _print_active_routes(config)
 
 
 def _print_active_routes(config: GatewayConfig) -> None:
@@ -125,11 +68,11 @@ def _print_active_routes(config: GatewayConfig) -> None:
     _print_route_table(active_routes)
 
 
-def cmd_gateway_run(args: argparse.Namespace) -> None:
+def cmd_run(args: argparse.Namespace) -> None:
     run_server(args.config, args.port)
 
 
-def cmd_gateway_check(args: argparse.Namespace) -> None:
+def cmd_check(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     timeout = getattr(args, "verify_timeout", 15.0)
     print(f"Verifying provider connectivity (timeout {timeout:g}s)...")
@@ -152,6 +95,13 @@ def cmd_settings_import(args: argparse.Namespace) -> None:
 def cmd_settings_apply(args: argparse.Namespace) -> None:
     from flexgate.settings import settings_apply
     settings_apply(args.config)
+
+
+# ── sync subcommand ────────────────────────────────────────────────
+
+def cmd_sync(args: argparse.Namespace) -> None:
+    from flexgate.sync import sync_pull
+    sync_pull(args.config, dry_run=getattr(args, "dry_run", False))
 
 
 # ── config subcommands ────────────────────────────────────────────
@@ -217,6 +167,7 @@ def cmd_config_init(args: argparse.Namespace) -> None:
         print(f"Config already exists: {config_path}")
         return
     with open(config_path, "w") as f:
+        f.write(f"config_version: {CURRENT_CONFIG_VERSION}\n\n")
         f.write(DEFAULT_CONFIG_TEMPLATE)
     print(f"Created: {config_path}")
     print("Edit the file to add your API keys and providers.")
@@ -713,6 +664,7 @@ def cmd_service_reload(args: argparse.Namespace) -> None:
 
 def cmd_service_status(args: argparse.Namespace) -> None:
     from flexgate.service import service_status
+    print(f"flexgate {__version__}")
     config_path = service_status() or args.config
     try:
         config = load_config(config_path)
@@ -727,6 +679,37 @@ def cmd_service_help(args: argparse.Namespace) -> None:
     service_help()
 
 
+def _print_sync_help() -> None:
+    print("""\
+Infisical sync (flexgate sync):
+  Requires the infisical CLI to be installed and logged in ('infisical login');
+  sync checks both before doing anything and prints setup hints if missing.
+  Connection is configured via the 'infisical:' section in config.yaml
+  (project_id, env). Each provider is a folder under /providers named after
+  the provider, holding an API_KEY secret (optional MODELS secret, comma
+  separated). 'flexgate sync' downloads the latest keys into config.yaml and
+  hot-reloads the running service; folders matching a known prefix
+  (flexgate/registry.py) are auto-imported as new providers, unknown prefixes
+  produce a warning. Use --dry-run to preview without writing.
+""")
+
+
+# ── doctor / update ───────────────────────────────────────────────
+
+def cmd_doctor(args: argparse.Namespace) -> None:
+    from flexgate.doctor import run_doctor
+    sys.exit(run_doctor(args.config, offline=getattr(args, "offline", False)))
+
+
+def cmd_update(args: argparse.Namespace) -> None:
+    from flexgate.update import run_update
+    sys.exit(run_update(
+        args.config,
+        check=getattr(args, "check", False),
+        config_only=getattr(args, "config_only", False),
+    ))
+
+
 # ── default action (no subcommand) ────────────────────────────────
 
 def cmd_default(args: argparse.Namespace) -> None:
@@ -734,12 +717,13 @@ def cmd_default(args: argparse.Namespace) -> None:
 
     - service running        → show status (same as `flexgate service status`)
     - service installed      → show status + hint how to start it
-    - otherwise (fresh boot) → initialise config + hint how to edit & install
+    - otherwise (fresh boot) → show how to install the service
     """
     from flexgate.service import service_active, service_installed, service_status
 
     config_path = args.config
 
+    print(f"flexgate {__version__}")
     if service_active() or service_installed():
         service_status()
         try:
@@ -756,18 +740,18 @@ def cmd_default(args: argparse.Namespace) -> None:
         print("Stop/restart with:  flexgate service stop|restart")
         return
 
-    # Fresh / not-yet-installed: guide the user through first-time setup.
-    print("Welcome to Flexgate! No service is installed yet.\n")
+    # Not installed: show how to set up and install the service.
+    print("The flexgate service is not installed yet.\n")
     if not os.path.exists(config_path):
-        with open(config_path, "w") as f:
-            f.write(DEFAULT_CONFIG_TEMPLATE)
-        print(f"Created a default config at: {config_path}")
+        print("1. Create a config and add your API keys:")
+        print("     flexgate config init       # writes a template to ~/.flexgate/config.yaml")
+        print("     flexgate config edit       # or pick providers/models interactively")
+        print("2. Install and start the persistent service:")
+        print("     flexgate service install")
     else:
         print(f"Found an existing config at: {config_path}")
-    print("Open it to add your API keys and providers, or edit interactively with:")
-    print("  flexgate config edit")
-    print("\nWhen ready, install and start the persistent service with:")
-    print("  flexgate service install")
+        print("Install and start the persistent service with:")
+        print("  flexgate service install")
 
 
 # ── main ───────────────────────────────────────────────────────────
@@ -781,6 +765,7 @@ def main() -> None:
         ),
     )
     parser.add_argument("--config", default=None, help="Config file (default: ~/.flexgate/config.yaml)")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     sub = parser.add_subparsers(dest="group")
 
@@ -804,33 +789,16 @@ def main() -> None:
     svc_sub.add_parser("status", help="Show service status and active routes")
     svc_sub.add_parser("help", help="Show service command help")
 
-    # flexgate gateway ...
-    gw = sub.add_parser(
-        "gateway",
-        help="Foreground/debug commands and service compatibility aliases",
-    )
-    gw.add_argument(
+    # flexgate run / check (foreground debugging) ...
+    run_p = sub.add_parser("run", help="Run one foreground server for debugging")
+    run_p.add_argument(
         "--port",
         type=int,
         default=None,
-        help="Override listen port for 'gateway run' only",
+        help="Override listen port for this foreground run only",
     )
-    gw_sub = gw.add_subparsers(dest="command")
-    gw_start = gw_sub.add_parser("start", help="Compatibility alias for 'service start'")
-    gw_start.add_argument(
-        "--no-guardian", action="store_true",
-        help=argparse.SUPPRESS,
-    )
-    gw_start.add_argument(
-        "--guardian-interval", type=float, default=3.0,
-        help=argparse.SUPPRESS,
-    )
-    gw_sub.add_parser("stop", help="Compatibility alias for 'service stop'")
-    gw_sub.add_parser("restart", help="Compatibility alias for 'service restart'")
-    gw_sub.add_parser("status", help="Compatibility alias for 'service status'")
-    gw_sub.add_parser("run", help="Run one foreground server for debugging")
-    gw_check = gw_sub.add_parser("check", help="Verify upstream provider connectivity")
-    gw_check.add_argument(
+    check_p = sub.add_parser("check", help="Verify upstream provider connectivity")
+    check_p.add_argument(
         "--verify-timeout", type=float, default=15.0,
         help="Per-provider connectivity check timeout in seconds (default: 15.0)"
     )
@@ -840,6 +808,32 @@ def main() -> None:
     st_sub = st.add_subparsers(dest="command")
     st_sub.add_parser("import", help="Import ~/.claude/settings.json* into config.yaml")
     st_sub.add_parser("apply", help="Apply config.yaml to ~/.claude/settings.json")
+
+    # flexgate sync ...
+    sy = sub.add_parser("sync", help="Pull provider API keys from Infisical into config.yaml")
+    sy.add_argument(
+        "--dry-run", action="store_true",
+        help="Show which keys would change without writing the config"
+    )
+
+    # flexgate help ...
+    sub.add_parser("help", help="Show help, including Infisical sync details")
+
+    # flexgate doctor / update ...
+    doc_p = sub.add_parser("doctor", help="Diagnose installation and config problems")
+    doc_p.add_argument(
+        "--offline", action="store_true",
+        help="Skip the PyPI check for a newer flexgate release"
+    )
+    up_p = sub.add_parser("update", help="Upgrade flexgate (pip) and migrate the config schema")
+    up_p.add_argument(
+        "--check", action="store_true",
+        help="Only report what would change, without modifying anything"
+    )
+    up_p.add_argument(
+        "--config-only", action="store_true",
+        help="Only migrate the config schema; skip the package upgrade"
+    )
 
     # flexgate config ...
     cf = sub.add_parser("config", help="View and manage configuration")
@@ -861,20 +855,11 @@ def main() -> None:
         args.config = get_default_config_path()
     ensure_home_dir()
 
-    if args.group == "gateway":
-        handlers = {
-            "start": cmd_gateway_start,
-            "stop": cmd_gateway_stop,
-            "restart": cmd_gateway_restart,
-            "status": cmd_gateway_status,
-            "run": cmd_gateway_run,
-            "check": cmd_gateway_check,
-        }
-        handler = handlers.get(args.command)
-        if not handler:
-            gw.print_help()
-            sys.exit(1)
-        handler(args)
+    if args.group == "run":
+        cmd_run(args)
+
+    elif args.group == "check":
+        cmd_check(args)
 
     elif args.group == "settings":
         handlers = {
@@ -917,6 +902,20 @@ def main() -> None:
             svc.print_help()
             sys.exit(1)
         handler(args)
+
+    elif args.group == "sync":
+        cmd_sync(args)
+
+    elif args.group == "doctor":
+        cmd_doctor(args)
+
+    elif args.group == "update":
+        cmd_update(args)
+
+    elif args.group == "help":
+        parser.print_help()
+        print()
+        _print_sync_help()
 
     else:
         cmd_default(args)

@@ -1,6 +1,6 @@
 """Manage Flexgate's authoritative systemd user service.
 
-Persistent serving belongs to ``flexgate.service``. ``gateway run`` remains a
+Persistent serving belongs to ``flexgate.service``. ``flexgate run`` remains a
 foreground development command; legacy PID/guardian processes are migrated
 away when the service starts.
 """
@@ -106,7 +106,7 @@ def _ensure_available() -> None:
         return
     print(reason)
     print("\n'flexgate service' requires a systemd user instance (Linux).")
-    print("Alternative: run the foreground server with 'flexgate gateway run'.")
+    print("Alternative: run the foreground server with 'flexgate run'.")
     sys.exit(1)
 
 
@@ -918,10 +918,10 @@ def _maybe_apply_claude_settings(config_path: str, *, skip: bool) -> None:
 
 # ── public commands ───────────────────────────────────────────────
 
-def _refuse_running_legacy_gateway() -> None:
-    print("A legacy unmanaged gateway is still running.")
+def _refuse_running_legacy_gateway(gateway_pid: int) -> None:
+    print(f"A legacy unmanaged gateway is still running (PID {gateway_pid}).")
     print("The systemd unit has been prepared, but the legacy process was left untouched.")
-    print("Run 'flexgate gateway stop', then run 'flexgate service start'.")
+    print(f"Stop it with 'kill {gateway_pid}', then run 'flexgate service start'.")
     sys.exit(1)
 
 
@@ -940,11 +940,11 @@ def service_install(
         _write_service_unit(config_path, stop_active=False)
         _enable_linger()
         if not start:
-            print("Legacy gateway remains running until 'flexgate gateway stop'.")
+            print(f"Legacy gateway remains running until you stop it manually (kill {legacy.gateway_pid}).")
             print("Service installed but not started (use 'flexgate service start' afterward).")
             _print_status_brief()
             return
-        _refuse_running_legacy_gateway()
+        _refuse_running_legacy_gateway(legacy.gateway_pid)
 
     if start:
         _preflight_endpoint(config_path)
@@ -987,7 +987,7 @@ def service_start(
             install_if_missing=install_if_missing,
             stop_active=False,
         )
-        _refuse_running_legacy_gateway()
+        _refuse_running_legacy_gateway(legacy.gateway_pid)
 
     _preflight_endpoint(config_path)
     changed, backup = _ensure_service_unit(
@@ -1027,7 +1027,7 @@ def service_restart(
             install_if_missing=install_if_missing,
             stop_active=False,
         )
-        _refuse_running_legacy_gateway()
+        _refuse_running_legacy_gateway(legacy.gateway_pid)
 
     _preflight_endpoint(config_path)
     _, backup = _ensure_service_unit(
@@ -1199,7 +1199,7 @@ Details:
   • 'install' enables login linger so the service can run without an active login.
   • Routing-only changes reload with SIGUSR1; host/port changes use restart.
   • Logs: journalctl --user -u flexgate -e
-  • Legacy 'gateway start|stop|restart|status' commands are compatibility
-    aliases for this service. 'gateway run' is foreground/debug only.
+  • 'flexgate run' starts a foreground server for debugging only; it is not
+    a persistent serving mode.
 """
     )

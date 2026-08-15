@@ -12,7 +12,7 @@ Flexgate is a local Anthropic-compatible API gateway (~1800 lines of Python). It
 # Install / dev setup
 uv sync                                    # install dependencies
 uv run flexgate config init                 # create default config
-uv run flexgate gateway run                 # foreground run (debug)
+uv run flexgate run                         # foreground run (debug)
 
 # Global install (recommended for daily use)
 uv tool install -e .
@@ -20,8 +20,8 @@ flexgate service install                    # install + enable + start systemd u
 
 # Lifecycle
 flexgate service {install|start|stop|restart|reload|status|uninstall}
-flexgate gateway run                        # foreground/debug only
-flexgate gateway check                      # provider connectivity diagnostics
+flexgate run                                # foreground/debug only
+flexgate check                              # provider connectivity diagnostics
 
 # Config
 flexgate config {init|show|set|path|edit}
@@ -33,6 +33,17 @@ flexgate config edit                        # interactive curses TUI: pick provi
 flexgate settings import                    # read from ~/.claude/settings.json
 flexgate settings apply                     # write ANTHROPIC_BASE_URL → localhost
 
+# Infisical secret sync
+flexgate sync                               # pull provider API keys from Infisical into config.yaml
+flexgate sync --dry-run                     # preview changes without writing
+
+# Versioning / upgrades
+flexgate --version                          # print package version
+flexgate doctor                             # diagnose install/config problems (exit 1 on failure)
+flexgate update                             # upgrade package via pip/pipx/uv + migrate config schema
+flexgate update --check                     # report what would change, modify nothing
+flexgate update --config-only               # only migrate the config schema
+
 # Hot reload (no restart needed)
 # config set already reloads the active service; endpoint changes trigger restart
 flexgate service reload
@@ -43,9 +54,7 @@ There is no test suite, linter, or CI configured.
 ## Runtime authority
 
 The systemd user service is the only persistent serving mode on Linux.
-`gateway start|stop|restart|status` are compatibility aliases for the matching
-service commands and must never create a separate PID-file daemon.
-`gateway run` remains a single foreground process for development or systems
+`flexgate run` remains a single foreground process for development or systems
 without a systemd user instance.
 
 ## Architecture
@@ -64,7 +73,7 @@ Claude Code → POST /v1/messages (model="claude-sonnet-4-6")
 
 | File | Role |
 |------|------|
-| `cli.py` | argparse CLI; service lifecycle commands, gateway compatibility aliases, config/settings commands |
+| `cli.py` | argparse CLI; service lifecycle commands, foreground `run`/`check`, config/settings/sync commands |
 | `config.py` | Pydantic-like dataclasses (`GatewayConfig`, `ProviderConfig`, `RouteConfig`, `ScheduleEntry`), YAML load/save, `TIER_PATTERNS` regex map |
 | `router.py` | `resolve(config, model)` — schedule-first then default routes, first regex match wins |
 | `proxy.py` | `handle_request()` — httpx async proxy, SSE streaming + JSON pass-through |
@@ -74,6 +83,11 @@ Claude Code → POST /v1/messages (model="claude-sonnet-4-6")
 | `guardian.py` | Legacy port/PID helper; no longer owns persistent process supervision |
 | `healthcheck.py` | Pre-flight `POST /v1/messages` (max_tokens=1) to each referenced (provider, model) pair |
 | `settings.py` | Bridges `config.yaml` ↔ `~/.claude/settings.json` (import credentials, apply config) |
+| `sync.py` | `flexgate sync` — pulls provider api_keys from Infisical (`infisical` CLI) into config.yaml |
+| `registry.py` | `KNOWN_BASE_URLS` registry: service name prefix → base_url, used by sync to auto-import new providers |
+| `migrate.py` | Config schema versioning: `config_version` marker, per-step `MIGRATIONS` chain (N → N+1), backup + atomic rewrite |
+| `doctor.py` | `flexgate doctor` — read-only diagnostics (Python, PyPI update, config schema/semantics, port, systemd, Claude settings) |
+| `update.py` | `flexgate update` — PyPI version check, package upgrade via detected installer (pipx/uv/pip), config migration, service reload |
 
 ### Key design points
 
@@ -86,10 +100,20 @@ Claude Code → POST /v1/messages (model="claude-sonnet-4-6")
 - **Hot config reload**: `flexgate service reload` sends `SIGUSR1` for routing-only changes and restarts when the applied config path or endpoint changed. Same-port host changes require an explicit stop/start.
 - **Conflict prevention**: Service startup removes stale legacy PID files, stops verified legacy Flexgate daemons, validates the configured port, and rejects temporary config paths.
 - **Tier patterns** in `config.py`: `opus`, `sonnet`, `haiku` map to regex patterns for CLI shorthand (`config set sonnet ...`).
+- **Single-source versioning**: the package version lives only in `flexgate/__init__.py` (`__version__`); hatchling reads it via `[tool.hatch.version]`. `--version`, `service status` and the bare `flexgate` command all print it.
+- **Config schema versioning**: `config.yaml` carries `config_version` (current: `migrate.CURRENT_CONFIG_VERSION`). Each schema change adds one rule to `migrate.MIGRATIONS` upgrading N → N+1; upgrades walk the chain step by step. `save_config` always stamps the current version; `load_config` rejects configs written by a newer flexgate; `flexgate update` applies pending migrations with a timestamped backup.
 
 ### Config location
 
 Config lives at `~/.flexgate/config.yaml` (override with `FLEXGATE_CONFIG`).
+An optional `infisical:` section (`project_id`, `env`) enables `flexgate sync`.
+In Infisical, each provider is a folder under `/providers` named exactly after
+the provider, containing an `API_KEY` secret (e.g. `/providers/minimax-tmy/API_KEY`);
+the folder name is the provider mapping, so it is lossless (dashes etc. preserved).
+An optional `MODELS` secret holds comma-separated model names. Folders not yet in
+the config are auto-imported when their name starts with a known prefix
+(`KNOWN_BASE_URLS` in `registry.py`, overlaid with existing config providers;
+longest dash-boundary prefix wins); unknown prefixes get a warning.
 The persistent unit lives at `~/.config/systemd/user/flexgate.service`; logs are
 in the systemd user journal. `~/.flexgate/service-state.json` records the last
 successfully applied config path and endpoint. PID/guardian files are legacy artifacts only.
