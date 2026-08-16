@@ -10,7 +10,7 @@ from flexgate.config import ProviderConfig
 
 logger = logging.getLogger("flexgate.proxy")
 
-MULTIMODAL_MODELS = {"MiniMax-M3"}
+MULTIMODAL_MODELS = {"MiniMax-M3", "glm-4.6v"}
 _IMAGE_NOT_SUPPORTED_NOTE = "[flexgate] image message is not handled because multimodal is not supported by the current model"
 
 

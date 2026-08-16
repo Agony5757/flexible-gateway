@@ -89,7 +89,7 @@ Claude Code → POST /v1/messages (model="claude-sonnet-4-6")
 | `healthcheck.py` | Pre-flight `POST /v1/messages` (max_tokens=1) to each referenced (provider, model) pair |
 | `settings.py` | Bridges `config.yaml` ↔ `~/.claude/settings.json` (import credentials, apply config) |
 | `sync.py` | `flexgate sync` — pulls provider api_keys from Infisical (`infisical` CLI) into config.yaml |
-| `registry.py` | `KNOWN_BASE_URLS` registry: service name prefix → base_url, used by sync to auto-import new providers |
+| `registry.py` | `KNOWN_BASE_URLS` + `KNOWN_DEFAULT_MODELS` registry: service name prefix → base_url and latest models, used by sync to auto-import new providers |
 | `migrate.py` | Config schema versioning: `config_version` marker, per-step `MIGRATIONS` chain (N → N+1), backup + atomic rewrite |
 | `doctor.py` | `flexgate doctor` — read-only diagnostics (Python, PyPI update, config schema/semantics, port, systemd, Claude settings) |
 | `update.py` | `flexgate update` — PyPI version check, package upgrade via detected installer (pipx/uv/pip), config migration, service reload; also the cached (24h) new-version notice shown by bare `flexgate` / `service status` |
@@ -99,7 +99,7 @@ Claude Code → POST /v1/messages (model="claude-sonnet-4-6")
 - **Regex-first routing**: Routes are regex patterns matched against the `model` field in the request body. First match wins. A catch-all `".*"` pattern at the end handles fallback.
 - **Model resolution & `available_models` fallback**: A route may omit `model`; `router.resolve()` then falls back to the provider's first `available_models` entry, so `model_override` handed to the proxy is always a concrete name. `config._parse_routes` rejects routes that omit `model` on a provider with no `available_models` — so adding a provider without models requires an explicit `model` on every route using it.
 - **Proxy rewrite contract** (`proxy.py`): the upstream request gets the provider's `x-api-key` plus a fixed header set, and the JSON `model` field is rewritten only when the route set an override. Streaming responses are forwarded as raw bytes (`aiter_bytes`), never parsed.
-- **Multimodal degradation**: `MULTIMODAL_MODELS` (currently `{"MiniMax-M3"}`) is the allowlist. Requests carrying image blocks aimed at any other model have images stripped and a `[flexgate]` text note injected into both the outgoing request and the returned response, so non-multimodal backends don't 4xx.
+- **Multimodal degradation**: `MULTIMODAL_MODELS` (currently `{"MiniMax-M3", "glm-4.6v"}`) is the allowlist. Requests carrying image blocks aimed at any other model have images stripped and a `[flexgate]` text note injected into both the outgoing request and the returned response, so non-multimodal backends don't 4xx.
 - **Schedule-based overrides**: Optional time windows (e.g. 22:00-06:00) override default routes. Overnight wrap is supported.
 - **Service-first lifecycle**: `flexgate.service` is the sole persistent runtime. systemd owns restart, boot startup, logs, and process state.
 - **Hot config reload**: `flexgate service reload` sends `SIGUSR1` for routing-only changes and restarts when the applied config path or endpoint changed. Same-port host changes require an explicit stop/start.
@@ -115,7 +115,9 @@ An optional `infisical:` section (`project_id`, `env`) enables `flexgate sync`.
 In Infisical, each provider is a folder under `/providers` named exactly after
 the provider, containing an `API_KEY` secret (e.g. `/providers/minimax-tmy/API_KEY`);
 the folder name is the provider mapping, so it is lossless (dashes etc. preserved).
-An optional `MODELS` secret holds comma-separated model names. Folders not yet in
+An optional `MODELS` secret holds comma-separated model names; without one,
+sync falls back to the registry's latest models for the matched prefix
+(`KNOWN_DEFAULT_MODELS` in `registry.py`). Folders not yet in
 the config are auto-imported when their name starts with a known prefix
 (`KNOWN_BASE_URLS` in `registry.py`, overlaid with existing config providers;
 longest dash-boundary prefix wins); unknown prefixes get a warning.

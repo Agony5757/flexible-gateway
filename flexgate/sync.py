@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 from flexgate.config import ProviderConfig, load_config, save_config
-from flexgate.registry import KNOWN_BASE_URLS
+from flexgate.registry import KNOWN_BASE_URLS, KNOWN_DEFAULT_MODELS
 
 # Each provider is a folder under this path, named exactly after the provider,
 # containing an API_KEY secret:
@@ -20,6 +20,14 @@ def _match_base_url(name: str, table: dict[str, str]) -> str | None:
         if name == prefix or name.startswith(prefix + "-"):
             return table[prefix]
     return None
+
+
+def _match_models(name: str, table: dict[str, list[str]]) -> list[str]:
+    """Longest known prefix of `name` (dash boundary) → its default models."""
+    for prefix in sorted(table, key=len, reverse=True):
+        if name == prefix or name.startswith(prefix + "-"):
+            return list(table[prefix])
+    return []
 
 
 def _mask_key(key: str) -> str:
@@ -103,10 +111,11 @@ def sync_pull(config_path: str, dry_run: bool = False) -> None:
 
     Provider mapping is derived from the Infisical layout: a folder named
     after the provider under /providers, holding an API_KEY secret (an
-    optional MODELS secret lists comma-separated model names). Folders with
-    no matching provider in the config are auto-imported when their name
-    starts with a known prefix (see KNOWN_BASE_URLS in registry.py);
-    otherwise a warning is printed.
+    optional MODELS secret lists comma-separated model names; without one,
+    the registry's latest models for the matched prefix are used). Folders
+    with no matching provider in the config are auto-imported when their
+    name starts with a known prefix (see KNOWN_BASE_URLS and
+    KNOWN_DEFAULT_MODELS in registry.py); otherwise a warning is printed.
     """
     _check_prerequisites()
 
@@ -147,6 +156,8 @@ def sync_pull(config_path: str, dry_run: bool = False) -> None:
     # auto-import them by matching the folder name against known prefixes.
     base_url_table = dict(KNOWN_BASE_URLS)
     base_url_table.update({n: p.base_url for n, p in config.providers.items()})
+    models_table = dict(KNOWN_DEFAULT_MODELS)
+    models_table.update({n: p.available_models for n, p in config.providers.items() if p.available_models})
 
     imported: list[str] = []
     unknown: list[str] = []
@@ -162,6 +173,10 @@ def sync_pull(config_path: str, dry_run: bool = False) -> None:
             unknown.append(name)
             continue
         models = [m.strip() for m in secrets.get("MODELS", "").split(",") if m.strip()]
+        if not models:
+            # No MODELS secret: fall back to the registry's latest models
+            # for the matched prefix.
+            models = _match_models(name, models_table)
         config.providers[name] = ProviderConfig(
             name=name,
             base_url=base_url,

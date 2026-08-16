@@ -269,8 +269,8 @@ providers:
     base_url: "https://api.z.ai/api/anthropic"
     api_key: "your-zai-api-key"
     available_models:
-      - "glm-5.1"      # used as fallback when a route omits `model`
-      - "glm-4.6"
+      - "glm-5.3"      # used as fallback when a route omits `model`
+      - "glm-4.6v"
   minimax:
     base_url: "https://api.minimaxi.com/anthropic"
     api_key: "your-minimax-api-key"
@@ -287,9 +287,11 @@ claude_settings:
 # api_keys from Infisical. Each provider is a folder under /providers named
 # exactly after the provider, holding an API_KEY secret
 # (e.g. /providers/minimax-tmy/API_KEY). An optional MODELS secret holds
-# comma-separated model names. New folders are auto-imported by matching
-# their name prefix against known base_urls (see KNOWN_BASE_URLS in
-# flexgate/registry.py); unrecognized prefixes produce a warning.
+# comma-separated model names; without one, the registry's latest models for
+# the matched prefix are used. New folders are auto-imported by matching
+# their name prefix against known base_urls (see KNOWN_BASE_URLS and
+# KNOWN_DEFAULT_MODELS in flexgate/registry.py); unrecognized prefixes
+# produce a warning.
 # infisical:
 #   project_id: "your-infisical-project-id"
 #   env: "dev"
@@ -300,7 +302,7 @@ claude_settings:
 routes:
   - pattern: "^claude-opus"
     provider: zai
-    model: "glm-5.1"
+    model: "glm-5.3"
   - pattern: "^claude-sonnet"
     provider: minimax
     model: "MiniMax-M3"

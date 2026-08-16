@@ -6,9 +6,14 @@ providers:
   zai:
     base_url: "https://api.z.ai/api/anthropic"
     api_key: "your-zai-api-key"
+    available_models:
+      - "glm-5.3"      # 路由省略 model 时的回退模型
+      - "glm-4.6v"
   minimax:
     base_url: "https://api.minimaxi.com/anthropic"
     api_key: "your-minimax-api-key"
+    available_models:
+      - "MiniMax-M3"
 
 claude_settings:
   default_opus_model: "claude-opus-4-7"
@@ -19,8 +24,10 @@ claude_settings:
 # Infisical 密钥同步（可选）：启用后可用 `flexgate sync` 从 Infisical 拉取 provider 的 api_key。
 # 每个 provider 是 /providers 下与其同名的文件夹，内含 API_KEY secret
 # （如 /providers/minimax-tmy/API_KEY），文件夹名即 provider 映射，名符其实、无损。
-# 可选 MODELS secret 存放逗号分隔的模型名。config 中不存在的新文件夹会按名字前缀
-# 匹配已知 base_url 自动导入（前缀注册表见 flexgate/registry.py），识别不了的前缀会报警告。
+# 可选 MODELS secret 存放逗号分隔的模型名；没有 MODELS secret 时回退到注册表中
+# 该前缀的最新模型。config 中不存在的新文件夹会按名字前缀匹配已知 base_url 自动导入
+# （前缀注册表见 flexgate/registry.py 的 KNOWN_BASE_URLS / KNOWN_DEFAULT_MODELS），
+# 识别不了的前缀会报警告。
 # infisical:
 #   project_id: "your-infisical-project-id"
 #   env: "dev"
@@ -33,7 +40,7 @@ claude_settings:
 #     routes:
 #       - pattern: "^claude-opus"
 #         provider: zai
-#         model: "glm-5.1"
+#         model: "glm-5.3"
 #       - pattern: "^claude-sonnet"
 #         provider: xiaomi
 #         model: "mimo-v2.5-pro"
@@ -45,7 +52,7 @@ claude_settings:
 routes:
   - pattern: "^claude-opus"
     provider: zai
-    model: "glm-5.1"
+    model: "glm-5.3"
   - pattern: "^claude-sonnet"
     provider: minimax
     model: "MiniMax-M3"
