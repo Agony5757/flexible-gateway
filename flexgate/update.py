@@ -54,6 +54,60 @@ def detect_installer() -> tuple[str, list[str]] | None:
     return ("pip", [sys.executable, "-m", "pip", "install", "--upgrade", "flexgate"])
 
 
+# ── cached background version check ───────────────────────────────
+#
+# Interactive commands (bare `flexgate`, `service status`) show a one-line
+# upgrade hint when PyPI carries a newer release. The PyPI lookup is cached
+# on disk so it hits the network at most once per UPDATE_CHECK_INTERVAL and
+# never slows down or breaks the CLI (every failure is silent).
+
+UPDATE_CHECK_INTERVAL = 24 * 3600  # seconds between PyPI lookups
+
+
+def _update_check_cache_path() -> str:
+    import os
+
+    from flexgate.config import FLEXGATE_HOME
+    return os.path.join(FLEXGATE_HOME, "update-check.json")
+
+
+def latest_version_cached(interval: float = UPDATE_CHECK_INTERVAL) -> str | None:
+    """Latest PyPI version, cached on disk; None on any failure."""
+    import os
+    import time
+
+    path = _update_check_cache_path()
+    try:
+        with open(path) as f:
+            cache = json.load(f)
+        if time.time() - float(cache.get("checked_at", 0)) < interval:
+            return cache.get("latest") or None
+    except Exception:
+        pass
+
+    latest = fetch_latest_version(timeout=1.5)
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"checked_at": time.time(), "latest": latest}, f)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+    return latest
+
+
+def update_notice() -> str | None:
+    """One-line upgrade hint when PyPI has a newer release, else None."""
+    try:
+        latest = latest_version_cached()
+    except Exception:
+        return None
+    if latest and parse_version(latest) > parse_version(__version__):
+        return (f"A newer flexgate {latest} is available "
+                f"(installed {__version__}) — run: flexgate update")
+    return None
+
+
 def _config_status(config_path: str) -> tuple[int, list[int]] | None:
     """(current_version, pending steps), or None if the config cannot be read."""
     try:

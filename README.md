@@ -101,10 +101,29 @@ flexgate update --config-only    # 只迁移配置，不升级包
 
 - **包升级**：版本号唯一来源是 `flexgate/__init__.py`；发布到 PyPI 后，`flexgate update`
   自动检测安装方式（pipx / uv tool / pip）并升级到最新 release。
+- **新版本自动提示**：裸 `flexgate` 和 `flexgate service status` 会自动比对 PyPI 上的
+  最新版本，有新版时打印一行升级提示。检查结果缓存在
+  `~/.flexgate/update-check.json`，每 24 小时最多访问一次 PyPI，离线时静默跳过。
 - **配置迁移**：`config.yaml` 带 `config_version` 标记。每次 schema 变化在
   `flexgate/migrate.py` 的 `MIGRATIONS` 中登记一条 N → N+1 规则，升级时逐级走完整个迁移链。
   迁移前自动备份为 `config.yaml.bak-<时间戳>`；配置比当前 flexgate 更新时会被拒绝并提示先升级。
 - **自检**：发版或排障时跑 `flexgate doctor`，有 FAIL 项时退出码为 1，可直接用于 CI 门禁。
+
+### 发布流程（维护者）
+
+仓库托管在 <https://github.com/Agony5757/flexible-gateway>，通过 GitHub Actions
+自动发布到 PyPI（trusted publishing，无需 API token）：
+
+```bash
+# 1. 修改 flexgate/__init__.py 中的 __version__（唯一版本来源）
+# 2. 提交后打 tag，tag 必须与 __version__ 一致（CI 会校验）
+git tag v0.2.0
+git push origin main --tags
+```
+
+推送 `v*` tag 触发 `.github/workflows/release.yml`：校验 tag 与 `__version__` 一致 →
+构建 sdist/wheel → 发布到 PyPI。首次发布前需在 PyPI 项目设置中配置
+Trusted Publisher（repo: `Agony5757/flexible-gateway`，workflow: `release.yml`）。
 
 ### 上游连通性预检
 
@@ -207,6 +226,7 @@ flexgate settings apply          # 将 config.yaml 配置写入 ~/.claude/settin
 |------|------|
 | `~/.flexgate/config.yaml` | 主配置文件 |
 | `~/.flexgate/service-state.json` | 最近一次成功启动所应用的 config 路径与 endpoint |
+| `~/.flexgate/update-check.json` | PyPI 新版本检查的缓存（24h 有效期） |
 | `~/.config/systemd/user/flexgate.service` | 唯一的持久化服务 unit |
 | systemd journal | 服务日志（`journalctl --user -u flexgate`） |
 

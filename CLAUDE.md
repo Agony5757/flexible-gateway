@@ -49,7 +49,12 @@ flexgate update --config-only               # only migrate the config schema
 flexgate service reload
 ```
 
-There is no test suite, linter, or CI configured.
+There is no test suite or linter configured. CI is a single GitHub Actions
+release workflow (`.github/workflows/release.yml`): pushing a `v*` tag verifies
+the tag matches `__version__`, builds sdist/wheel, and publishes to PyPI via
+trusted publishing. The canonical repo is
+<https://github.com/Agony5757/flexible-gateway> (`origin`; the old Gitea remote
+is kept as `gitea`).
 
 ## Runtime authority
 
@@ -87,7 +92,7 @@ Claude Code → POST /v1/messages (model="claude-sonnet-4-6")
 | `registry.py` | `KNOWN_BASE_URLS` registry: service name prefix → base_url, used by sync to auto-import new providers |
 | `migrate.py` | Config schema versioning: `config_version` marker, per-step `MIGRATIONS` chain (N → N+1), backup + atomic rewrite |
 | `doctor.py` | `flexgate doctor` — read-only diagnostics (Python, PyPI update, config schema/semantics, port, systemd, Claude settings) |
-| `update.py` | `flexgate update` — PyPI version check, package upgrade via detected installer (pipx/uv/pip), config migration, service reload |
+| `update.py` | `flexgate update` — PyPI version check, package upgrade via detected installer (pipx/uv/pip), config migration, service reload; also the cached (24h) new-version notice shown by bare `flexgate` / `service status` |
 
 ### Key design points
 

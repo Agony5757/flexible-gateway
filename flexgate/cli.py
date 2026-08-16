@@ -672,6 +672,15 @@ def cmd_service_status(args: argparse.Namespace) -> None:
         print(f"\nRoutes unavailable: could not load {config_path}: {e}")
         return
     _print_active_routes(config)
+    _print_update_notice()
+
+
+def _print_update_notice() -> None:
+    """Show a one-line hint when PyPI carries a newer flexgate (cached, silent)."""
+    from flexgate.update import update_notice
+    notice = update_notice()
+    if notice:
+        print(f"\n{notice}")
 
 
 def cmd_service_help(args: argparse.Namespace) -> None:
@@ -724,6 +733,7 @@ def cmd_default(args: argparse.Namespace) -> None:
     config_path = args.config
 
     print(f"flexgate {__version__}")
+    _print_update_notice()
     if service_active() or service_installed():
         service_status()
         try:
