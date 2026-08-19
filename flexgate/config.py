@@ -55,12 +55,6 @@ class ClaudeSettings:
 
 
 @dataclass
-class ConfsyncConfig:
-    server_url: str = ""
-    app: str = "flexgate"
-
-
-@dataclass
 class ScheduleEntry:
     name: str
     start_minutes: int
@@ -75,7 +69,6 @@ class GatewayConfig:
     routes: list[RouteConfig] = field(default_factory=list)
     schedule: list[ScheduleEntry] = field(default_factory=list)
     claude_settings: ClaudeSettings = field(default_factory=ClaudeSettings)
-    confsync: ConfsyncConfig = field(default_factory=ConfsyncConfig)
 
 
 def _parse_hhmm(value: str) -> int:
@@ -175,13 +168,6 @@ def load_config(path: str | None = None) -> GatewayConfig:
             api_timeout_ms=cs.get("api_timeout_ms", cfg.claude_settings.api_timeout_ms),
         )
 
-    cs2 = raw.get("confsync", {})
-    if cs2:
-        cfg.confsync = ConfsyncConfig(
-            server_url=str(cs2.get("server_url", "")),
-            app=str(cs2.get("app", "flexgate")),
-        )
-
     return cfg
 
 
@@ -220,12 +206,6 @@ def save_config(cfg: GatewayConfig, path: str | None = None) -> None:
         },
         "routes": _serialize_routes(cfg.routes),
     }
-
-    if cfg.confsync.server_url:
-        data["confsync"] = {
-            "server_url": cfg.confsync.server_url,
-            "app": cfg.confsync.app,
-        }
 
     for name, prov in cfg.providers.items():
         entry: dict = {
@@ -304,16 +284,6 @@ claude_settings:
   default_sonnet_model: "claude-sonnet-4-6"
   default_haiku_model: "claude-haiku-4-5"
   api_timeout_ms: 3000000
-
-# confsync config sync (optional): `flexgate sync` pushes/pulls this whole
-# file as an encrypted document on your confsync server. Connection normally
-# comes from the shared confsync credentials (`confsync login --server ...`,
-# stored at ~/.confsync/credentials.json) — no flexgate-side setup needed.
-# The section below is only needed to override the server or the document
-# app name (default app: "flexgate", document name: "config.yaml").
-# confsync:
-#   server_url: "https://confsync.example.com"
-#   app: "flexgate"
 
 # Scheduled routes (optional): switch model config by time of day; the first
 # matching time window wins.

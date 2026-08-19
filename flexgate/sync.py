@@ -2,8 +2,7 @@
 
 Connection details come from the shared confsync credentials
 (``confsync login --server <url>`` → ~/.confsync/credentials.json); the
-optional ``confsync:`` section in config.yaml only overrides the server URL
-and the document's app name (default app: "flexgate", name: "config.yaml").
+document is fixed at app "flexgate", name "config.yaml".
 
 Pull semantics:
   * local config missing → bootstrap: the remote document becomes the config
@@ -13,7 +12,6 @@ Pull semantics:
 """
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import sys
@@ -46,35 +44,15 @@ def _mask_key(key: str) -> str:
     return key[:4] + "***" + key[-4:]
 
 
-def _get_client(config_path: str):
-    """Build a confsync client: shared credentials, optionally overridden by
-    the config's confsync: section (server_url / app)."""
+def _get_client():
+    """Build a confsync client from the shared confsync credentials."""
     confsync, credentials = _import_confsync()
-
-    server_url_override, app = "", DEFAULT_APP
-    if os.path.exists(config_path):
-        cfg = load_config(config_path)
-        server_url_override = cfg.confsync.server_url
-        app = cfg.confsync.app or DEFAULT_APP
-
     try:
         client = credentials.load_client()
     except confsync.ConfsyncError as e:
         print(str(e))
         sys.exit(1)
-
-    if server_url_override and server_url_override.rstrip("/") != client.server_url:
-        creds_path = credentials.get_credentials_path()
-        with open(creds_path) as f:
-            api_key = json.load(f)["api_key"]
-        client.close()
-        try:
-            client = confsync.ConfsyncClient(server_url_override, api_key)
-        except confsync.ConfsyncError as e:
-            print(str(e))
-            sys.exit(1)
-
-    return client, app
+    return client, DEFAULT_APP
 
 
 def sync_push(config_path: str) -> None:
@@ -85,7 +63,7 @@ def sync_push(config_path: str) -> None:
     with open(config_path, encoding="utf-8") as f:
         content = f.read()
 
-    client, app = _get_client(config_path)
+    client, app = _get_client()
     confsync, _ = _import_confsync()
     with client:
         try:
@@ -115,7 +93,7 @@ def sync_pull(config_path: str, dry_run: bool = False, full: bool = False) -> No
     """Pull the remote config: bootstrap, full replace (--full), or key merge."""
     import yaml
 
-    client, app = _get_client(config_path)
+    client, app = _get_client()
     confsync, _ = _import_confsync()
     with client:
         try:

@@ -112,11 +112,10 @@ Claude Code → POST /v1/messages (model="claude-sonnet-4-6")
 ### Config location
 
 Config lives at `~/.flexgate/config.yaml` (override with `FLEXGATE_CONFIG`).
-An optional `confsync:` section (`server_url`, `app`) tweaks `flexgate sync`;
-normally no flexgate-side setup is needed — connection details come from the
-shared confsync credentials written by `confsync login --server <url>`
+`flexgate sync` needs no flexgate-side setup — connection details come from
+the shared confsync credentials written by `confsync login --server <url>`
 (`~/.confsync/credentials.json`). The whole config.yaml is synced as one
-encrypted document (default app `flexgate`, name `config.yaml`): pull merges
+encrypted document (app `flexgate`, name `config.yaml`): pull merges
 provider api_keys and imports remote-only providers (local routes/schedules
 untouched), bootstraps the file when missing, and `--full` replaces it with a
 timestamped backup. The `confsync-client` package is a declared dependency

@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-CURRENT_CONFIG_VERSION = 2
+CURRENT_CONFIG_VERSION = 3
 
 # ── per-step migration rules ──────────────────────────────────────
 # Each rule takes the raw config dict at version N and returns it upgraded
@@ -51,10 +51,22 @@ def _migrate_1_to_2(data: dict) -> dict:
     return data
 
 
+def _migrate_2_to_3(data: dict) -> dict:
+    """Drop the removed `confsync:` section.
+
+    The confsync override section (server_url / app) was removed; sync now
+    always uses the shared confsync credentials (`confsync login --server ...`)
+    and the default document (app "flexgate", name "config.yaml").
+    """
+    data.pop("confsync", None)
+    return data
+
+
 # version N → rule upgrading N to N+1
 MIGRATIONS: dict[int, Callable[[dict], dict]] = {
     0: _migrate_0_to_1,
     1: _migrate_1_to_2,
+    2: _migrate_2_to_3,
 }
 
 

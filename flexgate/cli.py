@@ -707,9 +707,8 @@ confsync sync (flexgate sync):
   routes/schedules are untouched. On a machine without config.yaml the pull
   bootstraps the whole file. Use --full to replace the local config entirely
   (a timestamped backup is kept), 'flexgate sync push' to upload, and
-  --dry-run to preview. The optional 'confsync:' section in config.yaml
-  overrides server_url / app (default app 'flexgate', document 'config.yaml').
-  Changes hot-reload the running service automatically.
+  --dry-run to preview. The document lives at app 'flexgate', name
+  'config.yaml'. Changes hot-reload the running service automatically.
 """)
 
 
