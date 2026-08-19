@@ -31,9 +31,12 @@ def _import_confsync():
         from confsync import credentials  # noqa: PLC0415
         return confsync, credentials
     except ImportError:
-        print("The 'confsync' client package is not installed in flexgate's environment.")
-        print("Install it, e.g.:  uv tool inject flexgate /path/to/confsync/client")
-        print("Then run:          confsync login --server https://<your-confsync-server>")
+        # confsync-client is a declared dependency; reaching here means the
+        # installation is broken (e.g. an editable install predating the dep).
+        print("The 'confsync' client package is missing from flexgate's environment.")
+        print("Reinstall/upgrade flexgate to fix it (it is a declared dependency):")
+        print("  uv tool install --force -e .        # from the flexgate repo")
+        print("or inject it manually:  uv tool inject flexgate confsync-client")
         sys.exit(1)
 
 

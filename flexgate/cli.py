@@ -700,10 +700,9 @@ def _print_sync_help() -> None:
     print("""\
 confsync sync (flexgate sync):
   Pushes/pulls config.yaml as an encrypted document on your confsync server.
-  Requires the confsync client package in flexgate's environment
-  (e.g. 'uv tool inject flexgate /path/to/confsync/client') and a one-time
-  'confsync login --server https://<server>' (shared credentials at
-  ~/.confsync/credentials.json). 'flexgate sync' (pull) updates api_keys of
+  Requires a one-time 'confsync login --server https://<server>' (shared
+  credentials at ~/.confsync/credentials.json); the confsync-client package
+  is a declared dependency. 'flexgate sync' (pull) updates api_keys of
   matching providers and imports providers present only remotely; local
   routes/schedules are untouched. On a machine without config.yaml the pull
   bootstraps the whole file. Use --full to replace the local config entirely

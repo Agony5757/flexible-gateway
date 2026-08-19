@@ -119,8 +119,8 @@ shared confsync credentials written by `confsync login --server <url>`
 encrypted document (default app `flexgate`, name `config.yaml`): pull merges
 provider api_keys and imports remote-only providers (local routes/schedules
 untouched), bootstraps the file when missing, and `--full` replaces it with a
-timestamped backup. The confsync client package must be present in flexgate's
-environment (e.g. `uv tool inject flexgate <path-to-confsync>/client`).
+timestamped backup. The `confsync-client` package is a declared dependency
+(PyPI), so sync works out of the box once logged in.
 The persistent unit lives at `~/.config/systemd/user/flexgate.service`; logs are
 in the systemd user journal. `~/.flexgate/service-state.json` records the last
 successfully applied config path and endpoint. PID/guardian files are legacy artifacts only.
