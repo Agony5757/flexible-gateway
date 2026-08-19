@@ -55,9 +55,9 @@ class ClaudeSettings:
 
 
 @dataclass
-class InfisicalConfig:
-    project_id: str = ""
-    env: str = "dev"
+class ConfsyncConfig:
+    server_url: str = ""
+    app: str = "flexgate"
 
 
 @dataclass
@@ -75,7 +75,7 @@ class GatewayConfig:
     routes: list[RouteConfig] = field(default_factory=list)
     schedule: list[ScheduleEntry] = field(default_factory=list)
     claude_settings: ClaudeSettings = field(default_factory=ClaudeSettings)
-    infisical: InfisicalConfig = field(default_factory=InfisicalConfig)
+    confsync: ConfsyncConfig = field(default_factory=ConfsyncConfig)
 
 
 def _parse_hhmm(value: str) -> int:
@@ -175,11 +175,11 @@ def load_config(path: str | None = None) -> GatewayConfig:
             api_timeout_ms=cs.get("api_timeout_ms", cfg.claude_settings.api_timeout_ms),
         )
 
-    inf = raw.get("infisical", {})
-    if inf:
-        cfg.infisical = InfisicalConfig(
-            project_id=str(inf.get("project_id", "")),
-            env=str(inf.get("env", "dev")),
+    cs2 = raw.get("confsync", {})
+    if cs2:
+        cfg.confsync = ConfsyncConfig(
+            server_url=str(cs2.get("server_url", "")),
+            app=str(cs2.get("app", "flexgate")),
         )
 
     return cfg
@@ -221,10 +221,10 @@ def save_config(cfg: GatewayConfig, path: str | None = None) -> None:
         "routes": _serialize_routes(cfg.routes),
     }
 
-    if cfg.infisical.project_id:
-        data["infisical"] = {
-            "project_id": cfg.infisical.project_id,
-            "env": cfg.infisical.env,
+    if cfg.confsync.server_url:
+        data["confsync"] = {
+            "server_url": cfg.confsync.server_url,
+            "app": cfg.confsync.app,
         }
 
     for name, prov in cfg.providers.items():
@@ -264,18 +264,40 @@ server:
 
 # Each provider must declare `available_models`. The first entry is used as the
 # fallback model whenever a route below omits its own `model:` field.
+# Multiple accounts on the same upstream can be configured as separate
+# providers (e.g. minimax-tmy / minimax-ywj below).
 providers:
+  minimax:
+    base_url: "https://api.minimaxi.com/anthropic"
+    api_key: "your-minimax-api-key"
+    available_models:
+      - "MiniMax-M3"
+  minimax-tmy:
+    base_url: "https://api.minimaxi.com/anthropic"
+    api_key: "your-minimax-tmy-api-key"
+    available_models:
+      - "MiniMax-M3"
+  minimax-ywj:
+    base_url: "https://api.minimaxi.com/anthropic"
+    api_key: "your-minimax-ywj-api-key"
+    available_models:
+      - "MiniMax-M3"
   zai:
     base_url: "https://api.z.ai/api/anthropic"
     api_key: "your-zai-api-key"
     available_models:
       - "glm-5.3"      # used as fallback when a route omits `model`
       - "glm-4.6v"
-  minimax:
-    base_url: "https://api.minimaxi.com/anthropic"
-    api_key: "your-minimax-api-key"
+  xiaomi:
+    base_url: "https://token-plan-cn.xiaomimimo.com/anthropic"
+    api_key: "your-xiaomi-api-key"
     available_models:
-      - "MiniMax-M3"
+      - "mimo-v2.5-pro"
+  ustc:
+    base_url: "https://api.llm.ustc.edu.cn"
+    api_key: "your-ustc-api-key"
+    available_models:
+      - "deepseek-v4-pro"
 
 claude_settings:
   default_opus_model: "claude-opus-4-7"
@@ -283,32 +305,48 @@ claude_settings:
   default_haiku_model: "claude-haiku-4-5"
   api_timeout_ms: 3000000
 
-# Infisical secret sync (optional): enables `flexgate sync` to pull provider
-# api_keys from Infisical. Each provider is a folder under /providers named
-# exactly after the provider, holding an API_KEY secret
-# (e.g. /providers/minimax-tmy/API_KEY). An optional MODELS secret holds
-# comma-separated model names; without one, the registry's latest models for
-# the matched prefix are used. New folders are auto-imported by matching
-# their name prefix against known base_urls (see KNOWN_BASE_URLS and
-# KNOWN_DEFAULT_MODELS in flexgate/registry.py); unrecognized prefixes
-# produce a warning.
-# infisical:
-#   project_id: "your-infisical-project-id"
-#   env: "dev"
+# confsync config sync (optional): `flexgate sync` pushes/pulls this whole
+# file as an encrypted document on your confsync server. Connection normally
+# comes from the shared confsync credentials (`confsync login --server ...`,
+# stored at ~/.confsync/credentials.json) — no flexgate-side setup needed.
+# The section below is only needed to override the server or the document
+# app name (default app: "flexgate", document name: "config.yaml").
+# confsync:
+#   server_url: "https://confsync.example.com"
+#   app: "flexgate"
 
+# Scheduled routes (optional): switch model config by time of day; the first
+# matching time window wins.
+# schedule:
+#   - name: "xiaomi-discount"
+#     start: "16:00"
+#     end: "24:00"
+#     routes:
+#       - pattern: "^claude-opus"
+#         provider: zai
+#         model: "glm-5.3"
+#       - pattern: "^claude-sonnet"
+#         provider: xiaomi
+#         model: "mimo-v2.5-pro"
+#       - pattern: "^claude-haiku"
+#         provider: minimax
+#         model: "MiniMax-M3"
+
+# Default routes (used when no schedule window is active).
 # Routes are matched top-to-bottom; first match wins.
 # `model:` is optional — when omitted, the provider's first available_models
 # entry is used. A provider referenced without `model` MUST have available_models.
 routes:
   - pattern: "^claude-opus"
-    provider: zai
-    model: "glm-5.3"
-  - pattern: "^claude-sonnet"
-    provider: minimax
-    model: "MiniMax-M3"
+    provider: ustc
+    model: "deepseek-v4-pro"
   - pattern: "^claude-haiku"
-    provider: minimax
-    model: "MiniMax-M3"
-  - pattern: ".*"           # catch-all, falls back to minimax's first available model
-    provider: minimax
+    provider: ustc
+    model: "deepseek-v4-pro"
+  - pattern: "^claude-sonnet"
+    provider: ustc
+    model: "deepseek-v4-pro"
+  - pattern: ".*"           # catch-all
+    provider: ustc
+    model: "deepseek-v4-pro"
 """

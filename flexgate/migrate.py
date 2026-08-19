@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-CURRENT_CONFIG_VERSION = 1
+CURRENT_CONFIG_VERSION = 2
 
 # ── per-step migration rules ──────────────────────────────────────
 # Each rule takes the raw config dict at version N and returns it upgraded
@@ -38,9 +38,23 @@ def _migrate_0_to_1(data: dict) -> dict:
     return data
 
 
+def _migrate_1_to_2(data: dict) -> dict:
+    """Replace the removed `infisical:` section with `confsync:`.
+
+    Infisical sync was replaced by confsync (self-hosted server). The old
+    `infisical` section is dropped; an empty `confsync` section is added —
+    connection details come from the shared confsync credentials
+    (`confsync login --server ...`), so no values need to be carried over.
+    """
+    data.pop("infisical", None)
+    data.setdefault("confsync", {})
+    return data
+
+
 # version N → rule upgrading N to N+1
 MIGRATIONS: dict[int, Callable[[dict], dict]] = {
     0: _migrate_0_to_1,
+    1: _migrate_1_to_2,
 }
 
 

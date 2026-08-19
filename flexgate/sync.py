@@ -1,33 +1,40 @@
+"""confsync config sync — push/pull ~/.flexgate/config.yaml via a confsync server.
+
+Connection details come from the shared confsync credentials
+(``confsync login --server <url>`` → ~/.confsync/credentials.json); the
+optional ``confsync:`` section in config.yaml only overrides the server URL
+and the document's app name (default app: "flexgate", name: "config.yaml").
+
+Pull semantics:
+  * local config missing → bootstrap: the remote document becomes the config
+  * local config present → merge: api_keys of matching providers are updated,
+    providers present only remotely are imported; local routes/schedules are
+    untouched (``--full`` replaces the whole file instead, with a backup)
+"""
 from __future__ import annotations
 
 import json
+import os
 import shutil
-import subprocess
 import sys
+import time
 
-from flexgate.config import ProviderConfig, load_config, save_config
-from flexgate.registry import KNOWN_BASE_URLS, KNOWN_DEFAULT_MODELS
+from flexgate.config import ProviderConfig, ensure_home_dir, load_config, save_config
 
-# Each provider is a folder under this path, named exactly after the provider,
-# containing an API_KEY secret:
-#   /providers/minimax-tmy/API_KEY
-PROVIDERS_FOLDER = "/providers"
+DOC_NAME = "config.yaml"
+DEFAULT_APP = "flexgate"
 
 
-def _match_base_url(name: str, table: dict[str, str]) -> str | None:
-    """Longest known prefix of `name` (dash boundary) → its base_url."""
-    for prefix in sorted(table, key=len, reverse=True):
-        if name == prefix or name.startswith(prefix + "-"):
-            return table[prefix]
-    return None
-
-
-def _match_models(name: str, table: dict[str, list[str]]) -> list[str]:
-    """Longest known prefix of `name` (dash boundary) → its default models."""
-    for prefix in sorted(table, key=len, reverse=True):
-        if name == prefix or name.startswith(prefix + "-"):
-            return list(table[prefix])
-    return []
+def _import_confsync():
+    try:
+        import confsync  # noqa: PLC0415
+        from confsync import credentials  # noqa: PLC0415
+        return confsync, credentials
+    except ImportError:
+        print("The 'confsync' client package is not installed in flexgate's environment.")
+        print("Install it, e.g.:  uv tool inject flexgate /path/to/confsync/client")
+        print("Then run:          confsync login --server https://<your-confsync-server>")
+        sys.exit(1)
 
 
 def _mask_key(key: str) -> str:
@@ -36,154 +43,139 @@ def _mask_key(key: str) -> str:
     return key[:4] + "***" + key[-4:]
 
 
-def _run_infisical(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["infisical", *args],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+def _get_client(config_path: str):
+    """Build a confsync client: shared credentials, optionally overridden by
+    the config's confsync: section (server_url / app)."""
+    confsync, credentials = _import_confsync()
 
+    server_url_override, app = "", DEFAULT_APP
+    if os.path.exists(config_path):
+        cfg = load_config(config_path)
+        server_url_override = cfg.confsync.server_url
+        app = cfg.confsync.app or DEFAULT_APP
 
-def _check_prerequisites() -> None:
-    if shutil.which("infisical") is None:
-        print("infisical CLI not found in PATH.")
-        print("Install it first: https://infisical.com/docs/cli/overview")
-        sys.exit(1)
-
-    proc = _run_infisical(["login", "status"])
-    if proc.returncode != 0:
-        print("infisical CLI is not authenticated.")
-        print("Run 'infisical login' first.")
-        sys.exit(1)
-
-
-def _parse_json(proc: subprocess.CompletedProcess[str], what: str) -> list:
     try:
-        data = json.loads(proc.stdout)
-    except json.JSONDecodeError as e:
-        print(f"Could not parse infisical {what} output: {e}")
-        sys.exit(1)
-    return data if isinstance(data, list) else []
-
-
-def _list_provider_folders(project_id: str, env: str) -> list[str]:
-    """List folder names under PROVIDERS_FOLDER; each name is a provider."""
-    proc = _run_infisical([
-        "secrets", "folders", "get",
-        "--path", PROVIDERS_FOLDER,
-        "-o", "json",
-        f"--projectId={project_id}",
-        f"--env={env}",
-        "--silent",
-    ])
-    if proc.returncode != 0:
-        print(f"Could not list folders under {PROVIDERS_FOLDER}:")
-        print((proc.stderr or proc.stdout).strip())
-        sys.exit(1)
-    return [str(f["folderName"]) for f in _parse_json(proc, "folders") if "folderName" in f]
-
-
-def _fetch_folder_secrets(project_id: str, env: str, folder: str) -> dict[str, str]:
-    proc = _run_infisical([
-        "export",
-        "--format=json",
-        f"--env={env}",
-        f"--projectId={project_id}",
-        f"--path={PROVIDERS_FOLDER}/{folder}",
-        "--expand=false",
-        "--silent",
-    ])
-    if proc.returncode != 0:
-        print(f"Failed to fetch secrets from {PROVIDERS_FOLDER}/{folder}:")
-        print((proc.stderr or proc.stdout).strip())
+        client = credentials.load_client()
+    except confsync.ConfsyncError as e:
+        print(str(e))
         sys.exit(1)
 
-    secrets: dict[str, str] = {}
-    for entry in _parse_json(proc, "export"):
-        if isinstance(entry, dict) and "key" in entry:
-            secrets[str(entry["key"])] = str(entry.get("value", ""))
-    return secrets
+    if server_url_override and server_url_override.rstrip("/") != client.server_url:
+        creds_path = credentials.get_credentials_path()
+        with open(creds_path) as f:
+            api_key = json.load(f)["api_key"]
+        client.close()
+        try:
+            client = confsync.ConfsyncClient(server_url_override, api_key)
+        except confsync.ConfsyncError as e:
+            print(str(e))
+            sys.exit(1)
+
+    return client, app
 
 
-def sync_pull(config_path: str, dry_run: bool = False) -> None:
-    """Pull provider api_keys from Infisical into the flexgate config.
-
-    Provider mapping is derived from the Infisical layout: a folder named
-    after the provider under /providers, holding an API_KEY secret (an
-    optional MODELS secret lists comma-separated model names; without one,
-    the registry's latest models for the matched prefix are used). Folders
-    with no matching provider in the config are auto-imported when their
-    name starts with a known prefix (see KNOWN_BASE_URLS and
-    KNOWN_DEFAULT_MODELS in registry.py); otherwise a warning is printed.
-    """
-    _check_prerequisites()
-
-    config = load_config(config_path)
-    inf = config.infisical
-    if not inf.project_id:
-        print("No Infisical project configured.")
-        print(f"Add an 'infisical' section to {config_path}:")
-        print()
-        print("  infisical:")
-        print("    project_id: \"<your-project-id>\"")
-        print("    env: \"dev\"")
+def sync_push(config_path: str) -> None:
+    """Upload the local config.yaml to the confsync server."""
+    if not os.path.exists(config_path):
+        print(f"No config at {config_path} — nothing to push.")
         sys.exit(1)
+    with open(config_path, encoding="utf-8") as f:
+        content = f.read()
 
-    if not config.providers:
-        print("No providers configured; nothing to sync.")
+    client, app = _get_client(config_path)
+    confsync, _ = _import_confsync()
+    with client:
+        try:
+            version = client.push(app, DOC_NAME, content)
+        except confsync.ConfsyncError as e:
+            print(str(e))
+            sys.exit(1)
+    print(f"Pushed {config_path} → {app}/{DOC_NAME} v{version} on {client.server_url}")
+
+
+def _bootstrap_pull(client, app: str, config_path: str, remote_text: str) -> None:
+    ensure_home_dir()
+    with open(config_path, "w", encoding="utf-8") as f:
+        f.write(remote_text)
+    print(f"Bootstrapped {config_path} from {app}/{DOC_NAME} ({client.server_url}).")
+
+
+def _full_pull(client, app: str, config_path: str, remote_text: str) -> None:
+    backup = f"{config_path}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
+    shutil.copy2(config_path, backup)
+    with open(config_path, "w", encoding="utf-8") as f:
+        f.write(remote_text)
+    print(f"Replaced {config_path} with {app}/{DOC_NAME} (backup: {backup}).")
+
+
+def sync_pull(config_path: str, dry_run: bool = False, full: bool = False) -> None:
+    """Pull the remote config: bootstrap, full replace (--full), or key merge."""
+    import yaml
+
+    client, app = _get_client(config_path)
+    confsync, _ = _import_confsync()
+    with client:
+        try:
+            remote_text = client.pull(app, DOC_NAME)
+        except confsync.ConfsyncError as e:
+            print(str(e))
+            sys.exit(1)
+
+    if not os.path.exists(config_path):
+        if dry_run:
+            print(f"Dry run: would bootstrap {config_path} from {app}/{DOC_NAME}.")
+            return
+        _bootstrap_pull(client, app, config_path, remote_text)
         return
 
-    print(f"Fetching secrets from Infisical (project {inf.project_id}, env {inf.env})...")
-    folders = _list_provider_folders(inf.project_id, inf.env)
+    if full:
+        if dry_run:
+            print(f"Dry run: would replace {config_path} with {app}/{DOC_NAME}.")
+            return
+        _full_pull(client, app, config_path, remote_text)
+        from flexgate.service import reload_service_if_active
+        msg = reload_service_if_active(config_path)
+        if msg:
+            print(msg)
+        return
 
+    # ── merge mode: keys + new providers, local routes/schedules kept ──
+    try:
+        remote_raw = yaml.safe_load(remote_text)
+    except yaml.YAMLError as e:
+        print(f"Remote document {app}/{DOC_NAME} is not valid YAML: {e}")
+        sys.exit(1)
+    if not isinstance(remote_raw, dict):
+        print(f"Remote document {app}/{DOC_NAME} is not a config mapping.")
+        sys.exit(1)
+    remote_providers = remote_raw.get("providers", {}) or {}
+
+    config = load_config(config_path)
     updated: list[str] = []
-    unchanged: list[str] = []
-    missing: list[str] = []
-
-    for name, prov in config.providers.items():
-        if name not in folders:
-            missing.append(name)
-            continue
-        new_key = _fetch_folder_secrets(inf.project_id, inf.env, name).get("API_KEY", "")
-        if new_key and new_key != prov.api_key:
-            prov.api_key = new_key
-            updated.append(name)
-        else:
-            unchanged.append(name)
-
-    # Providers that exist in Infisical but not in the local config: try to
-    # auto-import them by matching the folder name against known prefixes.
-    base_url_table = dict(KNOWN_BASE_URLS)
-    base_url_table.update({n: p.base_url for n, p in config.providers.items()})
-    models_table = dict(KNOWN_DEFAULT_MODELS)
-    models_table.update({n: p.available_models for n, p in config.providers.items() if p.available_models})
-
     imported: list[str] = []
-    unknown: list[str] = []
+    unchanged: list[str] = []
 
-    for name in [f for f in folders if f not in config.providers]:
-        base_url = _match_base_url(name, base_url_table)
-        if base_url is None:
-            unknown.append(name)
-            continue
-        secrets = _fetch_folder_secrets(inf.project_id, inf.env, name)
-        api_key = secrets.get("API_KEY", "")
-        if not api_key:
-            unknown.append(name)
-            continue
-        models = [m.strip() for m in secrets.get("MODELS", "").split(",") if m.strip()]
-        if not models:
-            # No MODELS secret: fall back to the registry's latest models
-            # for the matched prefix.
-            models = _match_models(name, models_table)
-        config.providers[name] = ProviderConfig(
-            name=name,
-            base_url=base_url,
-            api_key=api_key,
-            available_models=models,
-        )
-        imported.append(name)
+    for name, rp in remote_providers.items():
+        remote_key = str(rp.get("api_key", ""))
+        if name in config.providers:
+            prov = config.providers[name]
+            if remote_key and remote_key != prov.api_key:
+                prov.api_key = remote_key
+                updated.append(name)
+            else:
+                unchanged.append(name)
+        else:
+            base_url = str(rp.get("base_url", ""))
+            if not (base_url and remote_key):
+                print(f"  WARNING: remote provider '{name}' lacks base_url/api_key, skipped.")
+                continue
+            config.providers[name] = ProviderConfig(
+                name=name,
+                base_url=base_url.rstrip("/"),
+                api_key=remote_key,
+                available_models=[str(m) for m in (rp.get("available_models") or [])],
+            )
+            imported.append(name)
 
     for name in updated:
         print(f"  {name:16s} updated  (key: {_mask_key(config.providers[name].api_key)})")
@@ -191,14 +183,10 @@ def sync_pull(config_path: str, dry_run: bool = False) -> None:
         print(f"  {name:16s} imported (new provider, base_url: {config.providers[name].base_url})")
     for name in unchanged:
         print(f"  {name:16s} unchanged")
-    for name in missing:
-        print(f"  {name:16s} no folder {PROVIDERS_FOLDER}/{name} in Infisical")
-    for name in unknown:
-        print(f"  WARNING: {name} has no known prefix and was skipped.")
-        print(f"           Add it to the config manually, or register its prefix in flexgate/registry.py.")
+    for name in [n for n in config.providers if n not in remote_providers]:
+        print(f"  {name:16s} local-only (not in remote {app}/{DOC_NAME})")
 
-    changed = updated or imported
-    if not changed:
+    if not (updated or imported):
         print("\nAll keys are up to date.")
         return
 

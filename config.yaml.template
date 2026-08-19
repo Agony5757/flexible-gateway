@@ -2,18 +2,40 @@ server:
   host: "127.0.0.1"
   port: 8765
 
+# 每个 provider 必须声明 available_models，首个条目作为路由省略 model 时的回退模型。
+# 同一上游的多个账号可配置为多个 provider（如下面的 minimax-tmy / minimax-ywj）。
 providers:
+  minimax:
+    base_url: "https://api.minimaxi.com/anthropic"
+    api_key: "your-minimax-api-key"
+    available_models:
+      - "MiniMax-M3"
+  minimax-tmy:
+    base_url: "https://api.minimaxi.com/anthropic"
+    api_key: "your-minimax-tmy-api-key"
+    available_models:
+      - "MiniMax-M3"
+  minimax-ywj:
+    base_url: "https://api.minimaxi.com/anthropic"
+    api_key: "your-minimax-ywj-api-key"
+    available_models:
+      - "MiniMax-M3"
   zai:
     base_url: "https://api.z.ai/api/anthropic"
     api_key: "your-zai-api-key"
     available_models:
       - "glm-5.3"      # 路由省略 model 时的回退模型
       - "glm-4.6v"
-  minimax:
-    base_url: "https://api.minimaxi.com/anthropic"
-    api_key: "your-minimax-api-key"
+  xiaomi:
+    base_url: "https://token-plan-cn.xiaomimimo.com/anthropic"
+    api_key: "your-xiaomi-api-key"
     available_models:
-      - "MiniMax-M3"
+      - "mimo-v2.5-pro"
+  ustc:
+    base_url: "https://api.llm.ustc.edu.cn"
+    api_key: "your-ustc-api-key"
+    available_models:
+      - "deepseek-v4-pro"
 
 claude_settings:
   default_opus_model: "claude-opus-4-7"
@@ -21,16 +43,14 @@ claude_settings:
   default_haiku_model: "claude-haiku-4-5"
   api_timeout_ms: 3000000
 
-# Infisical 密钥同步（可选）：启用后可用 `flexgate sync` 从 Infisical 拉取 provider 的 api_key。
-# 每个 provider 是 /providers 下与其同名的文件夹，内含 API_KEY secret
-# （如 /providers/minimax-tmy/API_KEY），文件夹名即 provider 映射，名符其实、无损。
-# 可选 MODELS secret 存放逗号分隔的模型名；没有 MODELS secret 时回退到注册表中
-# 该前缀的最新模型。config 中不存在的新文件夹会按名字前缀匹配已知 base_url 自动导入
-# （前缀注册表见 flexgate/registry.py 的 KNOWN_BASE_URLS / KNOWN_DEFAULT_MODELS），
-# 识别不了的前缀会报警告。
-# infisical:
-#   project_id: "your-infisical-project-id"
-#   env: "dev"
+# confsync 配置同步（可选）：`flexgate sync` 把整个 config.yaml 作为加密文档
+# 同步到你的 confsync 服务端。连接信息通常来自共享凭据（先执行
+# `confsync login --server <url>`，凭据存于 ~/.confsync/credentials.json），
+# flexgate 侧无需配置。下面的 confsync 段仅用于覆盖 server_url 或文档 app 名
+# （默认 app 为 "flexgate"，文档名 "config.yaml"）。
+# confsync:
+#   server_url: "https://confsync.example.com"
+#   app: "flexgate"
 
 # 定时路由（可选）：按时间自动切换模型配置，首个时间窗口命中生效
 # schedule:
@@ -51,14 +71,14 @@ claude_settings:
 # 默认路由（不在任何定时窗口内时使用）
 routes:
   - pattern: "^claude-opus"
-    provider: zai
-    model: "glm-5.3"
-  - pattern: "^claude-sonnet"
-    provider: minimax
-    model: "MiniMax-M3"
+    provider: ustc
+    model: "deepseek-v4-pro"
   - pattern: "^claude-haiku"
-    provider: minimax
-    model: "MiniMax-M3"
+    provider: ustc
+    model: "deepseek-v4-pro"
+  - pattern: "^claude-sonnet"
+    provider: ustc
+    model: "deepseek-v4-pro"
   - pattern: ".*"
-    provider: minimax
-    model: "MiniMax-M3"
+    provider: ustc
+    model: "deepseek-v4-pro"

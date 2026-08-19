@@ -33,8 +33,10 @@ flexgate config edit                        # interactive curses TUI: pick provi
 flexgate settings import                    # read from ~/.claude/settings.json
 flexgate settings apply                     # write ANTHROPIC_BASE_URL → localhost
 
-# Infisical secret sync
-flexgate sync                               # pull provider API keys from Infisical into config.yaml
+# confsync config sync
+flexgate sync                               # pull config.yaml from your confsync server (merge keys)
+flexgate sync push                          # upload local config.yaml to the server
+flexgate sync --full                        # replace local config with the remote document (backup first)
 flexgate sync --dry-run                     # preview changes without writing
 
 # Versioning / upgrades
@@ -88,8 +90,7 @@ Claude Code → POST /v1/messages (model="claude-sonnet-4-6")
 | `guardian.py` | Legacy port/PID helper; no longer owns persistent process supervision |
 | `healthcheck.py` | Pre-flight `POST /v1/messages` (max_tokens=1) to each referenced (provider, model) pair |
 | `settings.py` | Bridges `config.yaml` ↔ `~/.claude/settings.json` (import credentials, apply config) |
-| `sync.py` | `flexgate sync` — pulls provider api_keys from Infisical (`infisical` CLI) into config.yaml |
-| `registry.py` | `KNOWN_BASE_URLS` + `KNOWN_DEFAULT_MODELS` registry: service name prefix → base_url and latest models, used by sync to auto-import new providers |
+| `sync.py` | `flexgate sync` — pushes/pulls the whole config.yaml as an encrypted document on a confsync server (lazily imports the `confsync` client package) |
 | `migrate.py` | Config schema versioning: `config_version` marker, per-step `MIGRATIONS` chain (N → N+1), backup + atomic rewrite |
 | `doctor.py` | `flexgate doctor` — read-only diagnostics (Python, PyPI update, config schema/semantics, port, systemd, Claude settings) |
 | `update.py` | `flexgate update` — PyPI version check, package upgrade via detected installer (pipx/uv/pip), config migration, service reload; also the cached (24h) new-version notice shown by bare `flexgate` / `service status` |
@@ -111,16 +112,15 @@ Claude Code → POST /v1/messages (model="claude-sonnet-4-6")
 ### Config location
 
 Config lives at `~/.flexgate/config.yaml` (override with `FLEXGATE_CONFIG`).
-An optional `infisical:` section (`project_id`, `env`) enables `flexgate sync`.
-In Infisical, each provider is a folder under `/providers` named exactly after
-the provider, containing an `API_KEY` secret (e.g. `/providers/minimax-tmy/API_KEY`);
-the folder name is the provider mapping, so it is lossless (dashes etc. preserved).
-An optional `MODELS` secret holds comma-separated model names; without one,
-sync falls back to the registry's latest models for the matched prefix
-(`KNOWN_DEFAULT_MODELS` in `registry.py`). Folders not yet in
-the config are auto-imported when their name starts with a known prefix
-(`KNOWN_BASE_URLS` in `registry.py`, overlaid with existing config providers;
-longest dash-boundary prefix wins); unknown prefixes get a warning.
+An optional `confsync:` section (`server_url`, `app`) tweaks `flexgate sync`;
+normally no flexgate-side setup is needed — connection details come from the
+shared confsync credentials written by `confsync login --server <url>`
+(`~/.confsync/credentials.json`). The whole config.yaml is synced as one
+encrypted document (default app `flexgate`, name `config.yaml`): pull merges
+provider api_keys and imports remote-only providers (local routes/schedules
+untouched), bootstraps the file when missing, and `--full` replaces it with a
+timestamped backup. The confsync client package must be present in flexgate's
+environment (e.g. `uv tool inject flexgate <path-to-confsync>/client`).
 The persistent unit lives at `~/.config/systemd/user/flexgate.service`; logs are
 in the systemd user journal. `~/.flexgate/service-state.json` records the last
 successfully applied config path and endpoint. PID/guardian files are legacy artifacts only.

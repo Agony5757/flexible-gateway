@@ -100,8 +100,16 @@ def cmd_settings_apply(args: argparse.Namespace) -> None:
 # ── sync subcommand ────────────────────────────────────────────────
 
 def cmd_sync(args: argparse.Namespace) -> None:
-    from flexgate.sync import sync_pull
-    sync_pull(args.config, dry_run=getattr(args, "dry_run", False))
+    from flexgate.sync import sync_pull, sync_push
+    action = getattr(args, "action", None) or "pull"
+    if action == "push":
+        sync_push(args.config)
+    else:
+        sync_pull(
+            args.config,
+            dry_run=getattr(args, "dry_run", False),
+            full=getattr(args, "full", False),
+        )
 
 
 # ── config subcommands ────────────────────────────────────────────
@@ -690,16 +698,19 @@ def cmd_service_help(args: argparse.Namespace) -> None:
 
 def _print_sync_help() -> None:
     print("""\
-Infisical sync (flexgate sync):
-  Requires the infisical CLI to be installed and logged in ('infisical login');
-  sync checks both before doing anything and prints setup hints if missing.
-  Connection is configured via the 'infisical:' section in config.yaml
-  (project_id, env). Each provider is a folder under /providers named after
-  the provider, holding an API_KEY secret (optional MODELS secret, comma
-  separated). 'flexgate sync' downloads the latest keys into config.yaml and
-  hot-reloads the running service; folders matching a known prefix
-  (flexgate/registry.py) are auto-imported as new providers, unknown prefixes
-  produce a warning. Use --dry-run to preview without writing.
+confsync sync (flexgate sync):
+  Pushes/pulls config.yaml as an encrypted document on your confsync server.
+  Requires the confsync client package in flexgate's environment
+  (e.g. 'uv tool inject flexgate /path/to/confsync/client') and a one-time
+  'confsync login --server https://<server>' (shared credentials at
+  ~/.confsync/credentials.json). 'flexgate sync' (pull) updates api_keys of
+  matching providers and imports providers present only remotely; local
+  routes/schedules are untouched. On a machine without config.yaml the pull
+  bootstraps the whole file. Use --full to replace the local config entirely
+  (a timestamped backup is kept), 'flexgate sync push' to upload, and
+  --dry-run to preview. The optional 'confsync:' section in config.yaml
+  overrides server_url / app (default app 'flexgate', document 'config.yaml').
+  Changes hot-reload the running service automatically.
 """)
 
 
@@ -820,14 +831,22 @@ def main() -> None:
     st_sub.add_parser("apply", help="Apply config.yaml to ~/.claude/settings.json")
 
     # flexgate sync ...
-    sy = sub.add_parser("sync", help="Pull provider API keys from Infisical into config.yaml")
+    sy = sub.add_parser("sync", help="Sync config.yaml with a confsync server (default: pull)")
+    sy.add_argument(
+        "action", nargs="?", choices=["pull", "push"], default="pull",
+        help="pull (default): download and merge; push: upload local config.yaml"
+    )
     sy.add_argument(
         "--dry-run", action="store_true",
         help="Show which keys would change without writing the config"
     )
+    sy.add_argument(
+        "--full", action="store_true",
+        help="Replace the whole local config with the remote document (backup first)"
+    )
 
     # flexgate help ...
-    sub.add_parser("help", help="Show help, including Infisical sync details")
+    sub.add_parser("help", help="Show help, including confsync sync details")
 
     # flexgate doctor / update ...
     doc_p = sub.add_parser("doctor", help="Diagnose installation and config problems")
