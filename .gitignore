@@ -6,3 +6,6 @@ config.yaml
 .github/copilot-instructions.md
 dist/
 .venv/
+
+# Sphinx build artifacts
+docs/_build/
