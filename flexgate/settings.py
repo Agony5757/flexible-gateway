@@ -8,6 +8,7 @@ import shutil
 from datetime import datetime
 
 from flexgate.config import (
+    ApiKey,
     ClaudeSettings,
     GatewayConfig,
     ProviderConfig,
@@ -105,7 +106,7 @@ def settings_import(config_path: str) -> None:
             cfg.providers[name] = ProviderConfig(
                 name=name,
                 base_url=prov["base_url"],
-                api_key=prov["api_key"],
+                api_keys=[ApiKey(key=prov["api_key"])],
             )
             print(f"  Added provider: {name}")
 

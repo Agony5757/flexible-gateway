@@ -18,11 +18,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-CURRENT_CONFIG_VERSION = 3
+CURRENT_CONFIG_VERSION = 4
 
 # ── per-step migration rules ──────────────────────────────────────
 # Each rule takes the raw config dict at version N and returns it upgraded
-# to version N+1. Rules must be idempotent and must not touch api keys.
+# to version N+1. Rules must be idempotent and must not alter key values.
 
 def _migrate_0_to_1(data: dict) -> dict:
     """Stamp the initial versioned schema.
@@ -62,11 +62,30 @@ def _migrate_2_to_3(data: dict) -> dict:
     return data
 
 
+def _migrate_3_to_4(data: dict) -> dict:
+    """Merge `api_key`/`fallback_keys` into the unified `api_keys` list.
+
+    Providers now declare all keys (primary + fallbacks) in one `api_keys`
+    list, whose entries are plain key strings or `{key, note}` mappings.
+    Key values are carried over unchanged; old-format configs are still
+    accepted by the parser, this step just rewrites the file to the new
+    schema.
+    """
+    for prov in (data.get("providers") or {}).values():
+        if not isinstance(prov, dict) or "api_keys" in prov or "api_key" not in prov:
+            continue
+        keys = [prov.pop("api_key")]
+        keys.extend(prov.pop("fallback_keys", None) or [])
+        prov["api_keys"] = keys
+    return data
+
+
 # version N → rule upgrading N to N+1
 MIGRATIONS: dict[int, Callable[[dict], dict]] = {
     0: _migrate_0_to_1,
     1: _migrate_1_to_2,
     2: _migrate_2_to_3,
+    3: _migrate_3_to_4,
 }
 
 

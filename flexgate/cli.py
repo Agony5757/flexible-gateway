@@ -85,6 +85,73 @@ def cmd_check(args: argparse.Namespace) -> None:
     print(f"\nAll {len(results)} target(s) OK.")
 
 
+# ── status (providers / fallback / usage / routes) ─────────────────
+
+def cmd_status(args: argparse.Namespace) -> None:
+    config_path = args.config
+    if not os.path.exists(config_path):
+        print(f"Config not found: {config_path}")
+        print("Run 'flexgate config init' to create one.")
+        sys.exit(1)
+
+    config = load_config(config_path)
+
+    print(f"flexgate {__version__}")
+    print(f"Config: {os.path.abspath(config_path)}")
+    print(f"Server: {config.server.host}:{config.server.port}")
+
+    print(f"\nProviders:")
+    for name, prov in config.providers.items():
+        keys = prov.api_keys
+        key_info = f"key: {_mask_key(keys[0].key)}"
+        if keys[0].note:
+            key_info += f" [{keys[0].note}]"
+        if len(keys) > 1:
+            key_info += f"  (+{len(keys) - 1} fallback key(s))"
+        models = ", ".join(prov.available_models) if prov.available_models else "(no models listed)"
+        print(f"  {name:16s} {prov.base_url}")
+        print(f"  {'':16s} {key_info}")
+        print(f"  {'':16s} models: {models}")
+        if len(keys) > 1:
+            chain = " → ".join(
+                f"#{i + 1} {_mask_key(k.key)}" + (f"[{k.note}]" if k.note else "")
+                for i, k in enumerate(keys)
+            )
+            print(f"  {'':16s} fallback: {chain}")
+
+    _print_active_routes(config)
+
+    if getattr(args, "no_usage", False):
+        return
+
+    _print_usage(config, getattr(args, "usage_timeout", 15.0))
+
+
+def cmd_usage(args: argparse.Namespace) -> None:
+    config_path = args.config
+    if not os.path.exists(config_path):
+        print(f"Config not found: {config_path}")
+        print("Run 'flexgate config init' to create one.")
+        sys.exit(1)
+
+    config = load_config(config_path)
+    _print_usage(config, getattr(args, "usage_timeout", 15.0))
+
+
+def _print_usage(config, timeout: float) -> None:
+    from flexgate.usage import run_usage_check
+
+    print(f"\nUsage (timeout {timeout:g}s per key):")
+    usage = run_usage_check(config, timeout=timeout)
+    for name, results in usage.items():
+        print(f"  {name}:")
+        for r in results:
+            marker = "✓" if r.ok else "✗"
+            print(f"    {marker} {r.key_label}  [{r.method}]")
+            for line in r.lines:
+                print(f"        {line}")
+
+
 # ── settings subcommands ────────────────────────────────────────────
 
 def cmd_settings_import(args: argparse.Namespace) -> None:
@@ -197,7 +264,10 @@ def cmd_config_show(args: argparse.Namespace) -> None:
 
     print(f"\nProviders:")
     for name, prov in config.providers.items():
-        print(f"  {name:16s} {prov.base_url}  (key: {_mask_key(prov.api_key)})")
+        print(f"  {name:16s} {prov.base_url}")
+        for i, k in enumerate(prov.api_keys):
+            note = f"  [{k.note}]" if k.note else ""
+            print(f"  {'':16s} key #{i + 1}: {_mask_key(k.key)}{note}")
 
     print(f"\nRoutes (default):")
     _print_route_table(config.routes)
@@ -448,12 +518,12 @@ def _text_input(stdscr, prompt: str) -> str | None:
     return text or None
 
 
-def _confirm(stdscr, question: str):
+def _confirm(stdscr, question: str, yes_label: str = "Yes, save changes", no_label: str = "No, discard changes"):
     """Yes/No prompt. Returns True, False, or None (cancel)."""
     sel = _menu_select(
         stdscr,
         [question, ""],
-        [("Yes, save changes", True), ("No, discard changes", False)],
+        [(yes_label, True), (no_label, False)],
         index=0,
     )
     return None if sel is _CANCEL else sel
@@ -583,7 +653,12 @@ def _edit_loop(stdscr, config: GatewayConfig, config_path: str):
                 status = "No changes to save"
         elif key in (ord("q"), 27):
             if dirty:
-                ans = _confirm(stdscr, "Unsaved changes — save before quitting?")
+                ans = _confirm(
+                    stdscr,
+                    "Config changed — activate now?",
+                    yes_label="Yes, activate now (hot-reload, no restart)",
+                    no_label="No, discard changes",
+                )
                 if ans is True:
                     save_config(config, config_path)
                     reload_msg = _signal_reload(config_path)
@@ -822,6 +897,29 @@ def main() -> None:
         help="Per-provider connectivity check timeout in seconds (default: 15.0)"
     )
 
+    # flexgate status ...
+    status_p = sub.add_parser(
+        "status",
+        help="Show providers, fallback chains, usage/quota and active routes",
+    )
+    status_p.add_argument(
+        "--no-usage", action="store_true",
+        help="Skip the per-key usage/quota queries"
+    )
+    status_p.add_argument(
+        "--usage-timeout", type=float, default=15.0,
+        help="Per-key usage query timeout in seconds (default: 15.0)"
+    )
+
+    usage_p = sub.add_parser(
+        "usage",
+        help="Show per-key usage/quota for all configured providers",
+    )
+    usage_p.add_argument(
+        "--usage-timeout", type=float, default=15.0,
+        help="Per-key usage query timeout in seconds (default: 15.0)"
+    )
+
     # flexgate settings ...
     st = sub.add_parser("settings", help="Manage Claude Code settings")
     st_sub = st.add_subparsers(dest="command")
@@ -887,6 +985,12 @@ def main() -> None:
 
     elif args.group == "check":
         cmd_check(args)
+
+    elif args.group == "status":
+        cmd_status(args)
+
+    elif args.group == "usage":
+        cmd_usage(args)
 
     elif args.group == "settings":
         handlers = {

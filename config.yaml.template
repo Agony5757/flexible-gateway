@@ -3,37 +3,39 @@ server:
   port: 8765
 
 # 每个 provider 必须声明 available_models，首个条目作为路由省略 model 时的回退模型。
-# 同一上游的多个账号可配置为多个 provider（如下面的 minimax-tmy / minimax-ywj）。
+# api_keys：同一上游的一个或多个 API key。每项可以是纯 key 字符串，也可以
+# 写成 {key, note}，note 是存在配置里的备注（flexgate status 和 fallback
+# 日志都会显示）。某个 key 遇到 401/402/403/429/5xx/529 或连接错误（如额度
+# 用尽、平台过载）时，按顺序自动切换到下一个 key 重试。同一上游的多个账号
+# 应这样配置，而不是拆成多个 provider。
 providers:
   minimax:
     base_url: "https://api.minimaxi.com/anthropic"
-    api_key: "your-minimax-api-key"
-    available_models:
-      - "MiniMax-M3"
-  minimax-tmy:
-    base_url: "https://api.minimaxi.com/anthropic"
-    api_key: "your-minimax-tmy-api-key"
-    available_models:
-      - "MiniMax-M3"
-  minimax-ywj:
-    base_url: "https://api.minimaxi.com/anthropic"
-    api_key: "your-minimax-ywj-api-key"
+    api_keys:
+      - key: "your-minimax-api-key"
+        note: "主账号"
+      - key: "your-minimax-api-key-2"
+        note: "备用账号"
+      - "your-minimax-api-key-3"   # 纯字符串写法（无备注）
     available_models:
       - "MiniMax-M3"
   zai:
     base_url: "https://api.z.ai/api/anthropic"
-    api_key: "your-zai-api-key"
+    api_keys:
+      - "your-zai-api-key"
     available_models:
       - "glm-5.3"      # 路由省略 model 时的回退模型
       - "glm-4.6v"
   xiaomi:
     base_url: "https://token-plan-cn.xiaomimimo.com/anthropic"
-    api_key: "your-xiaomi-api-key"
+    api_keys:
+      - "your-xiaomi-api-key"
     available_models:
       - "mimo-v2.5-pro"
   ustc:
     base_url: "https://api.llm.ustc.edu.cn"
-    api_key: "your-ustc-api-key"
+    api_keys:
+      - "your-ustc-api-key"
     available_models:
       - "deepseek-v4-pro"
 

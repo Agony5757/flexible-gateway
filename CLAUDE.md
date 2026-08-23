@@ -22,6 +22,7 @@ flexgate service install                    # install + enable + start systemd u
 flexgate service {install|start|stop|restart|reload|status|uninstall}
 flexgate run                                # foreground/debug only
 flexgate check                              # provider connectivity diagnostics
+flexgate status                             # providers, fallback chains, per-key usage, active routes
 
 # Config
 flexgate config {init|show|set|path|edit}
@@ -83,7 +84,8 @@ Claude Code → POST /v1/messages (model="claude-sonnet-4-6")
 | `cli.py` | argparse CLI; service lifecycle commands, foreground `run`/`check`, config/settings/sync commands |
 | `config.py` | Pydantic-like dataclasses (`GatewayConfig`, `ProviderConfig`, `RouteConfig`, `ScheduleEntry`), YAML load/save, `TIER_PATTERNS` regex map |
 | `router.py` | `resolve(config, model)` — schedule-first then default routes, first regex match wins |
-| `proxy.py` | `handle_request()` — httpx async proxy, SSE streaming + JSON pass-through |
+| `proxy.py` | `handle_request()` — httpx async proxy, per-key fallback retry loop, SSE streaming + JSON pass-through |
+| `usage.py` | `flexgate status` usage queries — per-platform adapters (MiniMax coding_plan API, Kimi Code usages API, z.ai quota API, LiteLLM `/key/info`) plus a minimal chat probe fallback |
 | `server.py` | Starlette app creation, `POST /v1/messages` endpoint, `SIGUSR1` lifespan reload |
 | `main.py` | Thin bootstrap: load config → create app → run uvicorn |
 | `service.py` | Authoritative systemd user-service install/start/stop/restart/reload/status and legacy PID migration |
@@ -100,6 +102,8 @@ Claude Code → POST /v1/messages (model="claude-sonnet-4-6")
 - **Regex-first routing**: Routes are regex patterns matched against the `model` field in the request body. First match wins. A catch-all `".*"` pattern at the end handles fallback.
 - **Model resolution & `available_models` fallback**: A route may omit `model`; `router.resolve()` then falls back to the provider's first `available_models` entry, so `model_override` handed to the proxy is always a concrete name. `config._parse_routes` rejects routes that omit `model` on a provider with no `available_models` — so adding a provider without models requires an explicit `model` on every route using it.
 - **Proxy rewrite contract** (`proxy.py`): the upstream request gets the provider's `x-api-key` plus a fixed header set, and the JSON `model` field is rewritten only when the route set an override. Streaming responses are forwarded as raw bytes (`aiter_bytes`), never parsed.
+- **Key fallback** (`proxy.py`): a provider's `api_keys` list holds one or more keys for the same upstream (entries are key strings or `{key, note}` mappings; `note` is a free-form label shown by `flexgate status` and in fallback logs). Multiple accounts on one upstream — e.g. several MiniMax subscriptions — belong in ONE provider, not separate ones. On a retryable failure (HTTP 401/402/403/429/500/502/503/529, connect error, or timeout) the request is retried with the next key in order. Streaming requests can only fall back before the upstream returns 200. `_regular_proxy`/`_stream_proxy` return `(response, retryable)`; `handle_request` owns the loop and returns the last error when all keys fail. The legacy `api_key` + `fallback_keys` schema is still parsed (`config._parse_api_keys`); migration v3 → v4 rewrites it to `api_keys`. `ProviderConfig.api_key` remains as a first-key property (getter/setter) for sync/settings merge code.
+- **Usage inspection** (`usage.py`): `flexgate status` maps `base_url` to a platform adapter (`_ADAPTERS`): MiniMax → `{origin}/v1/api/openplatform/coding_plan/remains` (the `*_usage_count` fields are REMAINING counts, an upstream naming quirk), Kimi Code → `{base}/v1/usages` (undocumented, same endpoint as the CLI's `/usage`; reports weekly quota, 5-hour window and parallel limit), z.ai/bigmodel → `{origin}/api/monitor/usage/quota/limit` (undocumented but used by z.ai's own plugin), USTC/LiteLLM → `{origin}/key/info`. Hosts in `_PROBE_ONLY_MARKERS` (e.g. xiaomimimo.com — no key-based usage API) and unknown platforms get the minimal chat probe: `POST /v1/messages` with input `"hi"`, `max_tokens=128`. A failed adapter call also degrades to the probe.
 - **Multimodal degradation**: `MULTIMODAL_MODELS` (currently `{"MiniMax-M3", "glm-4.6v"}`) is the allowlist. Requests carrying image blocks aimed at any other model have images stripped and a `[flexgate]` text note injected into both the outgoing request and the returned response, so non-multimodal backends don't 4xx.
 - **Schedule-based overrides**: Optional time windows (e.g. 22:00-06:00) override default routes. Overnight wrap is supported.
 - **Service-first lifecycle**: `flexgate.service` is the sole persistent runtime. systemd owns restart, boot startup, logs, and process state.

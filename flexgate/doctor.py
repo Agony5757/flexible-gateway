@@ -104,7 +104,10 @@ def _check_providers(config, findings: list[Finding]) -> None:
         findings.append(Finding(FAIL, "Providers", "none configured"))
         return
 
-    placeholders = [name for name, p in config.providers.items() if _is_placeholder_key(p.api_key)]
+    placeholders = [
+        name for name, p in config.providers.items()
+        if all(_is_placeholder_key(k.key) for k in p.api_keys)
+    ]
     if placeholders:
         findings.append(Finding(WARN, "Provider keys",
                                 f"placeholder api_key in: {', '.join(placeholders)}"))

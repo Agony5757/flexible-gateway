@@ -22,15 +22,34 @@ def ensure_home_dir() -> None:
 
 
 @dataclass
+class ApiKey:
+    """One API key for a provider, with an optional human-readable note."""
+    key: str
+    note: str = ""
+
+
+@dataclass
 class ProviderConfig:
     name: str
     base_url: str
-    api_key: str
+    api_keys: list[ApiKey] = field(default_factory=list)
     available_models: list[str] = field(default_factory=list)
 
     @property
     def default_model(self) -> str | None:
         return self.available_models[0] if self.available_models else None
+
+    @property
+    def api_key(self) -> str:
+        """The primary key (first of api_keys); later keys are fallbacks."""
+        return self.api_keys[0].key if self.api_keys else ""
+
+    @api_key.setter
+    def api_key(self, value: str) -> None:
+        if self.api_keys:
+            self.api_keys[0].key = value
+        else:
+            self.api_keys.append(ApiKey(key=value))
 
 
 @dataclass
@@ -80,6 +99,33 @@ def _parse_hhmm(value: str) -> int:
     if not (0 <= h <= 24 and 0 <= m <= 59):
         raise ValueError(f"Time out of range: '{value}'")
     return h * 60 + m
+
+
+def _parse_api_keys(name: str, prov: dict) -> list[ApiKey]:
+    """Parse a provider's key list.
+
+    Current schema: ``api_keys`` — a list whose entries are either a plain
+    key string or a mapping ``{key: ..., note: ...}``. The legacy schema
+    (``api_key`` plus optional ``fallback_keys``) is still accepted.
+    """
+    raw = prov.get("api_keys")
+    if raw is None:
+        raw = [prov["api_key"]]
+        raw.extend(prov.get("fallback_keys", []) or [])
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(f"Provider '{name}': 'api_keys' must be a non-empty list")
+    keys: list[ApiKey] = []
+    for item in raw:
+        if isinstance(item, str):
+            keys.append(ApiKey(key=item))
+        elif isinstance(item, dict) and isinstance(item.get("key"), str):
+            keys.append(ApiKey(key=item["key"], note=str(item.get("note") or "")))
+        else:
+            raise ValueError(
+                f"Provider '{name}': each api_keys entry must be a key string "
+                f"or a mapping with 'key' (and optional 'note')"
+            )
+    return keys
 
 
 def _parse_routes(raw_routes: list[dict], providers: dict[str, ProviderConfig]) -> list[RouteConfig]:
@@ -145,7 +191,7 @@ def load_config(path: str | None = None) -> GatewayConfig:
         cfg.providers[name] = ProviderConfig(
             name=name,
             base_url=prov["base_url"].rstrip("/"),
-            api_key=prov["api_key"],
+            api_keys=_parse_api_keys(name, prov),
             available_models=[str(m) for m in available],
         )
 
@@ -210,7 +256,10 @@ def save_config(cfg: GatewayConfig, path: str | None = None) -> None:
     for name, prov in cfg.providers.items():
         entry: dict = {
             "base_url": prov.base_url,
-            "api_key": prov.api_key,
+            "api_keys": [
+                {"key": k.key, "note": k.note} if k.note else k.key
+                for k in prov.api_keys
+            ],
         }
         if prov.available_models:
             entry["available_models"] = list(prov.available_models)
@@ -244,38 +293,42 @@ server:
 
 # Each provider must declare `available_models`. The first entry is used as the
 # fallback model whenever a route below omits its own `model:` field.
-# Multiple accounts on the same upstream can be configured as separate
-# providers (e.g. minimax-tmy / minimax-ywj below).
+#
+# `api_keys`: one or more API keys for the SAME upstream; each entry is either
+# a plain key string or {key, note} where `note` is a free-form label stored
+# in the config (shown by `flexgate status`, included in fallback logs).
+# When a key fails with a retryable error (401/402/403/429/5xx/529 or a
+# connection error — e.g. quota exhausted or provider overloaded), the request
+# is retried with the next key in order. Multiple accounts on the same
+# upstream should be configured this way instead of as separate providers.
 providers:
   minimax:
     base_url: "https://api.minimaxi.com/anthropic"
-    api_key: "your-minimax-api-key"
-    available_models:
-      - "MiniMax-M3"
-  minimax-tmy:
-    base_url: "https://api.minimaxi.com/anthropic"
-    api_key: "your-minimax-tmy-api-key"
-    available_models:
-      - "MiniMax-M3"
-  minimax-ywj:
-    base_url: "https://api.minimaxi.com/anthropic"
-    api_key: "your-minimax-ywj-api-key"
+    api_keys:
+      - key: "your-minimax-api-key"
+        note: "main account"
+      - key: "your-minimax-api-key-2"
+        note: "backup account"
+      - "your-minimax-api-key-3"   # plain string entry (no note)
     available_models:
       - "MiniMax-M3"
   zai:
     base_url: "https://api.z.ai/api/anthropic"
-    api_key: "your-zai-api-key"
+    api_keys:
+      - "your-zai-api-key"
     available_models:
       - "glm-5.3"      # used as fallback when a route omits `model`
       - "glm-4.6v"
   xiaomi:
     base_url: "https://token-plan-cn.xiaomimimo.com/anthropic"
-    api_key: "your-xiaomi-api-key"
+    api_keys:
+      - "your-xiaomi-api-key"
     available_models:
       - "mimo-v2.5-pro"
   ustc:
     base_url: "https://api.llm.ustc.edu.cn"
-    api_key: "your-ustc-api-key"
+    api_keys:
+      - "your-ustc-api-key"
     available_models:
       - "deepseek-v4-pro"
 

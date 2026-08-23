@@ -17,10 +17,26 @@ import shutil
 import sys
 import time
 
-from flexgate.config import ProviderConfig, ensure_home_dir, load_config, save_config
+from flexgate.config import ApiKey, ProviderConfig, ensure_home_dir, load_config, save_config
 
 DOC_NAME = "config.yaml"
 DEFAULT_APP = "flexgate"
+
+
+def _remote_primary_key(rp: dict) -> str:
+    """Extract a remote provider's primary key from either config schema."""
+    key = str(rp.get("api_key", "") or "")
+    if key:
+        return key
+    raw_keys = rp.get("api_keys") or []
+    if not raw_keys:
+        return ""
+    first = raw_keys[0]
+    if isinstance(first, str):
+        return first
+    if isinstance(first, dict):
+        return str(first.get("key", "") or "")
+    return ""
 
 
 def _import_confsync():
@@ -137,7 +153,7 @@ def sync_pull(config_path: str, dry_run: bool = False, full: bool = False) -> No
     unchanged: list[str] = []
 
     for name, rp in remote_providers.items():
-        remote_key = str(rp.get("api_key", ""))
+        remote_key = _remote_primary_key(rp)
         if name in config.providers:
             prov = config.providers[name]
             if remote_key and remote_key != prov.api_key:
@@ -148,12 +164,12 @@ def sync_pull(config_path: str, dry_run: bool = False, full: bool = False) -> No
         else:
             base_url = str(rp.get("base_url", ""))
             if not (base_url and remote_key):
-                print(f"  WARNING: remote provider '{name}' lacks base_url/api_key, skipped.")
+                print(f"  WARNING: remote provider '{name}' lacks base_url/api_keys, skipped.")
                 continue
             config.providers[name] = ProviderConfig(
                 name=name,
                 base_url=base_url.rstrip("/"),
-                api_key=remote_key,
+                api_keys=[ApiKey(key=remote_key)],
                 available_models=[str(m) for m in (rp.get("available_models") or [])],
             )
             imported.append(name)

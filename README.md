@@ -137,6 +137,34 @@ Trusted Publisher（repo: `Agony5757/flexible-gateway`，workflow: `release.yml`
 
 可通过 `--verify-timeout N` 调整每个 provider 的超时时间（默认 15 秒）。
 
+### 状态总览与用量查询（`flexgate status` / `flexgate usage`）
+
+```bash
+flexgate status                  # providers + fallback 链 + 每个 key 的用量 + 当前路由
+flexgate status --no-usage       # 跳过用量查询，只看配置
+flexgate status --usage-timeout 30
+flexgate usage                   # 只看每个 key 的用量/额度（不打印配置和路由）
+flexgate usage --usage-timeout 30
+```
+
+`flexgate status` 展示当前配置中的所有 provider、每个 provider 的 key 及
+fallback 链、当前生效的路由，并逐一查询**每个 key** 的用量/额度；
+`flexgate usage` 只输出其中的用量部分。
+
+各平台的用量查询方式差异很大，flexgate 按 `base_url` 自动选择适配器：
+
+| 平台 | 查询方式 | 说明 |
+|------|----------|------|
+| MiniMax（api.minimaxi.com / api.minimax.io） | `GET /v1/api/openplatform/coding_plan/remains`（Bearer 认证，复用 provider key） | 官方 token plan 接口，返回 5 小时窗口和周窗口的**剩余**次数（注意响应里 `*_usage_count` 字段实际是剩余量） |
+| Kimi Code（api.kimi.com） | `GET {base}/v1/usages`（Bearer 认证，复用 provider key） | 未公开文档、与 Kimi Code CLI `/usage` 相同的接口，返回周配额、5 小时滚动窗口剩余量和并发上限 |
+| z.ai / 智谱（api.z.ai / open.bigmodel.cn） | `GET /api/monitor/usage/quota/limit`（Authorization 直接带 key） | 未公开文档、但 z.ai 官方 coding 插件在用的接口，返回各窗口已用百分比与重置时间 |
+| USTC（api.llm.ustc.edu.cn，LiteLLM） | `GET /key/info`（Bearer 认证） | LiteLLM proxy 自带的 key 信息接口，返回 spend / max_budget / 限速等 |
+| 小米 MiMo（token-plan-cn.xiaomimimo.com） | **无 key 可用的官方接口**（控制台内部接口需要浏览器 cookie，不采用） | 退化为 minimal probe |
+| 其他/未知平台 | minimal chat probe | 发一条输入 `"hi"`、`max_tokens=128` 的最小 `/v1/messages` 请求，验证 key 是否还能正常服务（会消耗极少量额度） |
+
+如果某平台的专用接口调用失败，flexgate 会自动退化为 minimal probe 再试一次。
+用量查询接口多为平台内部接口，可能随时变动；查询结果仅供参考。
+
 ### 前台调试与连通性检查
 
 `run` / `check` 是独立的顶层调试命令，不属于持久化服务模式：
@@ -203,7 +231,7 @@ Flexgate config  —  ~/.flexgate/config.yaml
 
 - 方向键选中某个 tier（opus/sonnet/haiku），回车进入：先从候选 **provider** 列表选择，再从该 provider 的候选 **model** 列表选择。
 - model 列表包含：`available_models` 中的各个模型、「使用 provider 默认（首个可用模型，不写死 model）」、以及「自定义模型…」（手动输入）。
-- 按 `s` 保存（并向运行中的网关发送 SIGUSR1 热重载），按 `q` 退出（有未保存改动时会提示保存或放弃）；子菜单中按 `Esc`/`←` 返回上一级。
+- 按 `s` 保存（并向运行中的网关发送 SIGUSR1 热重载，**无需重启即生效**），按 `q` 退出（有未保存改动时会询问 "Config changed — activate now?"：选 Yes 立即保存并热重载生效，选 No 放弃改动）；子菜单中按 `Esc`/`←` 返回上一级。
 - 需要交互式终端（TTY）；非交互场景请改用 `flexgate config set`。
 
 ### Settings 管理
@@ -244,10 +272,16 @@ server:
 providers:
   zai:
     base_url: "https://api.z.ai/api/anthropic"
-    api_key: "your-zai-api-key"
+    api_keys:
+      - "your-zai-api-key"
   minimax:
     base_url: "https://api.minimaxi.com/anthropic"
-    api_key: "your-minimax-api-key"
+    api_keys:                   # 同一上游可配多个 key，互为 fallback
+      - key: "your-minimax-api-key"
+        note: "主账号"          # 可选备注，存在配置里，status/日志中显示
+      - key: "your-minimax-api-key-2"
+        note: "备用账号"
+      - "your-minimax-api-key-3"   # 纯字符串写法（无备注）
 
 claude_settings:
   default_opus_model: "claude-opus-4-7"
@@ -286,7 +320,8 @@ routes:                          # 从上到下匹配，首个命中生效
 |------|------|
 | `server.host/port` | 网关监听地址 |
 | `providers.<name>.base_url` | Provider 的 API 地址 |
-| `providers.<name>.api_key` | Provider 的 API 密钥 |
+| `providers.<name>.api_keys` | API key 列表（一个或多个，互为 fallback）；每项为 key 字符串或 `{key, note}`，`note` 是存在配置里的备注 |
+| `providers.<name>.available_models` | 该 provider 的可用模型列表，首个条目作为路由省略 `model` 时的回退模型 |
 | `claude_settings.*` | 写入 settings.json 的模型和超时配置 |
 | `routes[].pattern` | 正则匹配请求中的 model 字段 |
 | `routes[].provider` | 路由到的 provider 名称 |
@@ -294,6 +329,26 @@ routes:                          # 从上到下匹配，首个命中生效
 | `schedule[].name` | 定时规则名称 |
 | `schedule[].start/end` | 时间窗口（HH:MM 格式，支持跨夜如 22:00-06:00） |
 | `schedule[].routes` | 该时间窗口内生效的路由（格式同 `routes`） |
+
+### Key fallback
+
+同一上游有多个账号/key 时（例如多个 MiniMax 订阅），在 `api_keys` 里配
+多个 key，而不是拆成多个 provider。每项可以是纯 key 字符串，也可以写成
+`{key, note}` 加一个存在配置里的备注（`flexgate status` 和 fallback 日志
+都会显示 note，方便分辨是哪个账号的 key）：
+
+- 请求先走第一个 key；失败时按列表顺序自动重试后续 key，直到某个 key
+  成功或返回不可重试的错误。
+- 触发切换的条件：HTTP **401 / 402 / 403 / 429 / 500 / 502 / 503 / 529**
+  （key 失效、余额/额度耗尽、限流、平台过载）以及连接错误、超时。
+  其他 4xx（如 400 请求格式错误）不会触发切换。
+- 流式请求只有在上游返回非 200 状态码之前才能切换 key；一旦开始吐
+  token，响应已提交，无法再 fallback。
+- 每次切换都会在服务日志中留下记录（key 只显示前后各 4 位）。
+- 用 `flexgate status` 可以查看每个 provider 的 fallback 链和每个 key 的
+  实时用量。
+- 旧版 `api_key` + `fallback_keys` 写法仍然兼容，`flexgate update` 会
+  自动迁移为 `api_keys` 列表（config_version 3 → 4）。
 
 ## Settings Import
 
