@@ -1,6 +1,11 @@
 # Flexgate
 
+[![PyPI](https://img.shields.io/pypi/v/flexgate)](https://pypi.org/project/flexgate/)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://agony5757.github.io/flexible-gateway/)
+
 本地 Anthropic API 网关，根据请求中的 model 名称自动路由到不同的 provider。同时提供 Claude Code settings.json 的自动管理功能。
+
+完整文档见 **[agony5757.github.io/flexible-gateway](https://agony5757.github.io/flexible-gateway/)**（Sphinx 构建，源文件在 `docs/`，随 main 分支自动发布）。
 
 ## 用途
 
