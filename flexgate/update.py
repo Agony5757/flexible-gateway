@@ -5,6 +5,9 @@
 1. package — detect how flexgate was installed (pipx / uv tool / pip) and
    upgrade to the latest release published on PyPI;
 2. config — apply pending config.yaml schema migrations (with backup).
+   When the package was just upgraded, this half is delegated to a fresh
+   process so the migration runs with the NEW code's schema version,
+   not the stale one still loaded in this process.
 
 Use ``--check`` to only report what would change.
 """
@@ -123,6 +126,7 @@ def run_update(config_path: str, *, check: bool = False, config_only: bool = Fal
 
     print(f"flexgate {__version__} (config schema v{CURRENT_CONFIG_VERSION})")
     failures = 0
+    package_upgraded = False
 
     # ── package update ────────────────────────────────────────────
     latest = fetch_latest_version()
@@ -150,9 +154,22 @@ def run_update(config_path: str, *, check: bool = False, config_only: bool = Fal
                     else:
                         print(f"  Upgraded to {latest}. Restart the service to use it:")
                         print("    flexgate service restart")
+                        package_upgraded = True
 
     # ── config migration ──────────────────────────────────────────
     print()
+    if package_upgraded and not os.environ.get("FLEXGATE_UPDATE_DELEGATED"):
+        # This process still runs the OLD code: its CURRENT_CONFIG_VERSION and
+        # MIGRATIONS chain predate the release just installed, so an outdated
+        # config would be misreported as current (e.g. "schema v2 is current"
+        # right after upgrading to a v4 release). Hand the migration to the
+        # new code in a fresh process. The env guard prevents re-delegation
+        # if the upgrade somehow left an older version installed.
+        cmd = [sys.executable, "-m", "flexgate", "--config", config_path, "update", "--config-only"]
+        env = dict(os.environ, FLEXGATE_UPDATE_DELEGATED="1")
+        proc = subprocess.run(cmd, env=env)
+        return proc.returncode or (1 if failures else 0)
+
     if not os.path.exists(config_path):
         print(f"Config: {config_path} not found — nothing to migrate.")
         return 1 if failures else 0

@@ -95,7 +95,7 @@ Claude Code → POST /v1/messages (model="claude-sonnet-4-6")
 | `sync.py` | `flexgate sync` — pushes/pulls the whole config.yaml as an encrypted document on a confsync server (lazily imports the `confsync` client package) |
 | `migrate.py` | Config schema versioning: `config_version` marker, per-step `MIGRATIONS` chain (N → N+1), backup + atomic rewrite |
 | `doctor.py` | `flexgate doctor` — read-only diagnostics (Python, PyPI update, config schema/semantics, port, systemd, Claude settings) |
-| `update.py` | `flexgate update` — PyPI version check, package upgrade via detected installer (pipx/uv/pip), config migration, service reload; also the cached (24h) new-version notice shown by bare `flexgate` / `service status` |
+| `update.py` | `flexgate update` — PyPI version check, package upgrade via detected installer (pipx/uv/pip), config migration, service reload; after a successful package upgrade the config migration is re-run in a fresh process so it uses the new code's schema version (`FLEXGATE_UPDATE_DELEGATED` guards against re-delegation); also the cached (24h) new-version notice shown by bare `flexgate` / `service status` |
 
 ### Key design points
 
