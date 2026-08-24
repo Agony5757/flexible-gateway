@@ -23,6 +23,7 @@ import urllib.request
 
 from flexgate import __version__
 from flexgate.migrate import CURRENT_CONFIG_VERSION, migrate_config_file, read_raw_config, detect_config_version, pending_steps
+from flexgate.ui import bold, dim, green, ok, red, yellow
 
 PYPI_JSON_URL = "https://pypi.org/pypi/flexgate/json"
 
@@ -124,36 +125,36 @@ def _config_status(config_path: str) -> tuple[int, list[int]] | None:
 def run_update(config_path: str, *, check: bool = False, config_only: bool = False) -> int:
     import os
 
-    print(f"flexgate {__version__} (config schema v{CURRENT_CONFIG_VERSION})")
+    print(bold(f"flexgate {__version__}") + dim(f" (config schema v{CURRENT_CONFIG_VERSION})"))
     failures = 0
     package_upgraded = False
 
     # ── package update ────────────────────────────────────────────
     latest = fetch_latest_version()
     if latest is None:
-        print("\nPackage: could not reach PyPI — skipping package update check.")
+        print("\n" + bold("Package:") + " could not reach PyPI — skipping package update check.")
     else:
         newer = parse_version(latest) > parse_version(__version__)
-        print(f"\nPackage: installed {__version__}, latest {latest}"
-              + (" — update available" if newer else " — up to date"))
+        print(f"\n{bold('Package:')} installed {__version__}, latest {latest}"
+              + (yellow(" — update available") if newer else green(" — up to date")))
         if newer and not config_only:
             installer = detect_installer()
             if installer is None:
-                print("  Could not detect how flexgate was installed; upgrade manually.")
+                print(red("  Could not detect how flexgate was installed; upgrade manually."))
                 failures += 1
             else:
                 label, cmd = installer
                 if check:
-                    print(f"  Would run: {' '.join(cmd)}")
+                    print(f"  {dim('Would run:')} {' '.join(cmd)}")
                 else:
-                    print(f"  Upgrading via {label}: {' '.join(cmd)}")
+                    print(f"  Upgrading via {bold(label)}: {dim(' '.join(cmd))}")
                     proc = subprocess.run(cmd)
                     if proc.returncode != 0:
-                        print(f"  Package upgrade failed (exit {proc.returncode}).")
+                        print(red(f"  Package upgrade failed (exit {proc.returncode})."))
                         failures += 1
                     else:
-                        print(f"  Upgraded to {latest}. Restart the service to use it:")
-                        print("    flexgate service restart")
+                        ok(f"upgraded to {latest}. Restart the service to use it:")
+                        print(f"    {dim('flexgate service restart')}")
                         package_upgraded = True
 
     # ── config migration ──────────────────────────────────────────
@@ -171,29 +172,29 @@ def run_update(config_path: str, *, check: bool = False, config_only: bool = Fal
         return proc.returncode or (1 if failures else 0)
 
     if not os.path.exists(config_path):
-        print(f"Config: {config_path} not found — nothing to migrate.")
+        print(f"{bold('Config:')} {config_path} not found — nothing to migrate.")
         return 1 if failures else 0
 
     status = _config_status(config_path)
     if status is None:
-        print(f"Config: could not parse {config_path} — run 'flexgate doctor' for details.")
+        print(red(f"Config: could not parse {config_path} — run 'flexgate doctor' for details."))
         return 1
 
     version, steps = status
     if not steps:
-        print(f"Config: schema v{version} is current — nothing to migrate.")
+        print(f"{bold('Config:')} schema v{version} is current — nothing to migrate.")
     else:
-        print(f"Config: schema v{version} → v{CURRENT_CONFIG_VERSION}, {len(steps)} migration(s) pending.")
+        print(f"{bold('Config:')} schema v{version} → v{CURRENT_CONFIG_VERSION}, {len(steps)} migration(s) pending.")
         if check:
             for step in steps:
-                print(f"  Would apply v{step} → v{step + 1}")
+                print(f"  {dim(f'Would apply v{step} → v{step + 1}')}")
         else:
             result = migrate_config_file(config_path)
             for line in result.applied:
-                print(f"  Applied {line}")
+                ok(f"applied {dim(line)}")
             if result.backup_path:
-                print(f"  Backup: {result.backup_path}")
-            print(f"  Migrated: {config_path}")
+                print(f"  Backup: {dim(result.backup_path)}")
+            ok(f"migrated {config_path}")
 
     # ── reload the running service with the migrated config ──────
     if not check:

@@ -31,8 +31,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from flexgate.config import ApiKey, GatewayConfig, ProviderConfig
-from flexgate.healthcheck import _is_placeholder_key
+from flexgate.config import ApiKey, GatewayConfig, ProviderConfig, is_placeholder_key
 
 logger = logging.getLogger("flexgate.usage")
 
@@ -327,7 +326,7 @@ async def check_key_usage(
     label = f"key #{index + 1} ({_mask_key(key)})"
     if entry.note:
         label += f" [{entry.note}]"
-    if _is_placeholder_key(key):
+    if is_placeholder_key(key):
         return UsageResult(provider.name, label, "-", False, ["api_key looks like a placeholder"])
 
     if any(marker in provider.base_url for marker in _PROBE_ONLY_MARKERS):

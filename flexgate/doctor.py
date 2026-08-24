@@ -1,6 +1,8 @@
 """``flexgate doctor`` — diagnose common installation and config problems.
 
-Runs a series of read-only checks and prints OK / WARN / FAIL per item.
+Runs a series of read-only checks and prints OK / WARN / FAIL per item,
+including upstream provider connectivity (absorbed from the former
+``flexgate check`` command; skipped with ``--offline``).
 Exit code is 1 when any check FAILs, so it can gate a release or CI job.
 It never modifies anything; fixes are applied by ``flexgate update``.
 """
@@ -14,13 +16,14 @@ import sys
 from dataclasses import dataclass
 
 from flexgate import __version__
-from flexgate.config import load_config
+from flexgate.config import is_placeholder_key, load_config
 from flexgate.migrate import (
     CURRENT_CONFIG_VERSION,
     detect_config_version,
     pending_steps,
     read_raw_config,
 )
+from flexgate.ui import bold, dim, green, red, yellow
 from flexgate.update import fetch_latest_version
 
 OK, WARN, FAIL, SKIP = "OK", "WARN", "FAIL", "SKIP"
@@ -98,15 +101,13 @@ def _load_validated_config(config_path: str, findings: list[Finding]):
 
 
 def _check_providers(config, findings: list[Finding]) -> None:
-    from flexgate.healthcheck import _is_placeholder_key
-
     if not config.providers:
         findings.append(Finding(FAIL, "Providers", "none configured"))
         return
 
     placeholders = [
         name for name, p in config.providers.items()
-        if all(_is_placeholder_key(k.key) for k in p.api_keys)
+        if all(is_placeholder_key(k.key) for k in p.api_keys)
     ]
     if placeholders:
         findings.append(Finding(WARN, "Provider keys",
@@ -209,8 +210,33 @@ def _check_claude_settings(config, findings: list[Finding]) -> None:
                                 f"— 'flexgate settings apply'"))
 
 
-def run_doctor(config_path: str, *, offline: bool = False) -> int:
-    print(f"flexgate doctor — version {__version__}, config schema v{CURRENT_CONFIG_VERSION}\n")
+def _check_upstream(config, findings: list[Finding], *, offline: bool, timeout: float) -> None:
+    if offline:
+        findings.append(Finding(SKIP, "Upstream", "skipped (--offline)"))
+        return
+    if not config.providers:
+        return
+
+    from flexgate.healthcheck import check_providers
+
+    print(dim(f"probing upstream providers (timeout {timeout:g}s)..."))
+    for r in check_providers(config, timeout=timeout):
+        if not r.ok:
+            status = FAIL
+        elif r.status in (400, 404):
+            status = WARN  # reachable on the fallback-model probe
+        else:
+            status = OK
+        detail = f"{r.model}: {r.message}" if r.model else r.message
+        findings.append(Finding(status, f"Upstream {r.provider}", detail))
+
+
+_STATUS_COLOR = {OK: green, WARN: yellow, FAIL: red, SKIP: dim}
+
+
+def run_doctor(config_path: str, *, offline: bool = False, probe_timeout: float = 15.0) -> int:
+    print(bold("flexgate doctor")
+          + dim(f" — version {__version__}, config schema v{CURRENT_CONFIG_VERSION}") + "\n")
 
     findings: list[Finding] = []
     _check_python(findings)
@@ -222,23 +248,25 @@ def run_doctor(config_path: str, *, offline: bool = False) -> int:
         _check_routes(config, findings)
         _check_port(config, findings)
         _check_claude_settings(config, findings)
+        _check_upstream(config, findings, offline=offline, timeout=probe_timeout)
     _check_systemd(findings)
 
     width = max(len(f.label) for f in findings)
     for f in findings:
-        line = f"[{f.status:4s}] {f.label:{width}s}"
+        tag = _STATUS_COLOR[f.status](f"[{f.status:4s}]")
+        line = f"{tag} {f.label:{width}s}"
         if f.detail:
-            line += f"  {f.detail}"
+            line += f"  {dim(f.detail)}"
         print(line)
 
     fails = sum(1 for f in findings if f.status == FAIL)
     warns = sum(1 for f in findings if f.status == WARN)
     print()
     if fails:
-        print(f"{fails} problem(s) must be fixed; {warns} warning(s).")
+        print(red(f"{fails} problem(s) must be fixed; {warns} warning(s)."))
         return 1
     if warns:
-        print(f"No blocking problems; {warns} warning(s). 'flexgate update' fixes outdated versions.")
+        print(yellow(f"No blocking problems; {warns} warning(s). 'flexgate update' fixes outdated versions."))
     else:
-        print("Everything looks healthy.")
+        print(green("Everything looks healthy."))
     return 0

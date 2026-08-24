@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from flexgate.config import GatewayConfig, ProviderConfig
+from flexgate.config import GatewayConfig, ProviderConfig, is_placeholder_key
 
 logger = logging.getLogger("flexgate.healthcheck")
 
@@ -29,10 +29,6 @@ logger = logging.getLogger("flexgate.healthcheck")
 # an explicit ``model:`` field. May produce a 404 but still exercises the
 # auth path.
 _FALLBACK_TEST_MODEL = "claude-haiku-4-5"
-
-# Heuristic placeholders that the default template ships with; we don't
-# want to hit upstream with these.
-_PLACEHOLDER_MARKERS = ("your-", "xxx", "changeme", "placeholder")
 
 
 @dataclass
@@ -48,13 +44,6 @@ class CheckResult:
         if self.model:
             return f"{self.provider} / {self.model}"
         return self.provider
-
-
-def _is_placeholder_key(key: str) -> bool:
-    if not key:
-        return True
-    low = key.lower()
-    return any(marker in low for marker in _PLACEHOLDER_MARKERS)
 
 
 def _collect_targets(config: GatewayConfig) -> list[tuple[ProviderConfig, str | None]]:
@@ -97,7 +86,7 @@ async def _check_one(
     model: str | None,
     timeout: float,
 ) -> CheckResult:
-    if _is_placeholder_key(provider.api_key):
+    if is_placeholder_key(provider.api_key):
         return CheckResult(
             provider.name, model, False, None,
             "api_key looks like a placeholder — edit your config.yaml",
@@ -185,13 +174,3 @@ def check_providers(
 ) -> list[CheckResult]:
     """Synchronously run the connectivity checks."""
     return asyncio.run(check_providers_async(config, timeout))
-
-
-def print_results(results: list[CheckResult]) -> None:
-    if not results:
-        print("  (no providers configured)")
-        return
-    width = max(len(r.target) for r in results)
-    for r in results:
-        marker = "✓" if r.ok else "✗"
-        print(f"  {marker} {r.target.ljust(width)}  {r.message}")

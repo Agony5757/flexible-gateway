@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass
 
 from flexgate.config import FLEXGATE_HOME, get_default_config_path, load_config
+from flexgate.ui import bold, dim, err, fail, green, ok, red, yellow
 
 SERVICE_NAME = "flexgate.service"
 UNIT_MARKER = "# Managed by flexgate service mode v5"
@@ -104,9 +105,12 @@ def _ensure_available() -> None:
     available, reason = _systemd_user_available()
     if available:
         return
-    print(reason)
-    print("\n'flexgate service' requires a systemd user instance (Linux).")
-    print("Alternative: run the foreground server with 'flexgate run'.")
+    err(reason)
+    print(
+        "\n'flexgate service' requires a systemd user instance (Linux).\n"
+        "Alternative: run the foreground server with 'flexgate run'.",
+        file=sys.stderr,
+    )
     sys.exit(1)
 
 
@@ -269,19 +273,17 @@ def _is_temporary_path(path: str) -> bool:
 def _validate_persistent_config(config_path: str) -> str:
     config_abs = os.path.abspath(config_path)
     if _is_temporary_path(config_abs):
-        print(f"Refusing to install a persistent service with temporary config: {config_abs}")
-        print(f"Copy it to {get_default_config_path()} or another durable path first.")
-        sys.exit(1)
+        err(
+            f"Refusing to install a persistent service with temporary config: {config_abs}\n"
+            f"Copy it to {get_default_config_path()} or another durable path first.",
+            1,
+        )
     if not os.path.exists(config_abs):
-        print(f"Config not found: {config_abs}")
-        print("Run 'flexgate config init' first.")
-        sys.exit(1)
+        err(f"Config not found: {config_abs} — run 'flexgate config init' first.", 1)
     try:
         load_config(config_abs)
     except Exception as e:
-        print(f"Config error: {e}")
-        print("Fix the config before installing or starting the service.")
-        sys.exit(1)
+        err(f"Config error: {e} — fix the config before installing or starting the service.", 1)
     return config_abs
 
 
@@ -357,7 +359,7 @@ def _write_applied_state(config_path: str) -> None:
     except OSError as e:
         if temp_path:
             _remove_file(temp_path)
-        print(f"Warning: could not record applied service state: {e}")
+        print(yellow(f"Warning: could not record applied service state: {e}"))
 
 
 def record_applied_state(config_path: str) -> None:
@@ -521,12 +523,12 @@ def _select_config(
             or not os.path.exists(installed_config)
         )
     ):
-        print(
+        err(
             "The active service references a missing or volatile config. "
-            "Refusing to replace it implicitly."
+            "Refusing to replace it implicitly.\n"
+            "Select a durable replacement explicitly with: flexgate --config PATH service start",
+            1,
         )
-        print("Select a durable replacement explicitly with: flexgate --config PATH service start")
-        sys.exit(1)
 
     config_path = requested_config
     if config_path is None and legacy.gateway_argv:
@@ -544,16 +546,15 @@ def _select_config(
             try:
                 legacy_port = int(port_override)
             except ValueError:
-                print(f"Invalid legacy --port value: {port_override}")
-                sys.exit(1)
+                err(f"Invalid legacy --port value: {port_override}", 1)
             configured_port = load_config(config_path).server.port
             if legacy_port != configured_port:
-                print(
+                err(
                     f"Legacy gateway uses --port {legacy_port}, but {config_path} "
-                    f"configures server.port={configured_port}."
+                    f"configures server.port={configured_port}.\n"
+                    "Update server.port in the config before migrating to service mode.",
+                    1,
                 )
-                print("Update server.port in the config before migrating to service mode.")
-                sys.exit(1)
     return config_path
 
 
@@ -565,7 +566,7 @@ def _terminate_process(pid: int, module: str) -> bool:
     except ProcessLookupError:
         return True
     except PermissionError:
-        print(f"Permission denied stopping legacy Flexgate PID {pid}")
+        fail(f"Permission denied stopping legacy Flexgate PID {pid}")
         return False
 
     deadline = time.monotonic() + 5
@@ -584,10 +585,10 @@ def _terminate_process(pid: int, module: str) -> bool:
 def _stop_legacy_runtime(runtime: LegacyRuntime) -> None:
     if runtime.guardian_pid:
         if _terminate_process(runtime.guardian_pid, "flexgate.guardian"):
-            print(f"Stopped legacy unmanaged guardian process (PID {runtime.guardian_pid}).")
+            ok(f"stopped legacy unmanaged guardian process {dim(f'(PID {runtime.guardian_pid})')}")
     if runtime.gateway_pid:
         if _terminate_process(runtime.gateway_pid, "flexgate.main"):
-            print(f"Stopped legacy unmanaged gateway process (PID {runtime.gateway_pid}).")
+            ok(f"stopped legacy unmanaged gateway process {dim(f'(PID {runtime.gateway_pid})')}")
     _remove_file(LEGACY_GUARDIAN_PID_FILE)
     _remove_file(LEGACY_PID_FILE)
 
@@ -602,14 +603,14 @@ def _clean_stale_legacy_files() -> None:
             _remove_file(path)
         elif not _pid_running(pid) or not _matches_legacy_process(pid, module):
             _remove_file(path)
-            print(f"Removed stale legacy {label} PID file: {path}")
+            print(dim(f"Removed stale legacy {label} PID file: {path}"))
 
 
 def _print_legacy_status(runtime: LegacyRuntime) -> None:
     if runtime.gateway_pid:
-        print(f"Legacy unmanaged gateway is running (PID {runtime.gateway_pid}).")
+        print(yellow(f"Legacy unmanaged gateway is running (PID {runtime.gateway_pid})."))
     if runtime.guardian_pid:
-        print(f"Legacy unmanaged guardian is running (PID {runtime.guardian_pid}).")
+        print(yellow(f"Legacy unmanaged guardian is running (PID {runtime.guardian_pid})."))
 
 
 # ── endpoint preflight ────────────────────────────────────────────
@@ -664,15 +665,14 @@ def _preflight_endpoint(config_path: str) -> None:
             if target == applied:
                 return
             if target[1] == applied[1]:
-                print(
-                    "Changing server.host on the currently active port requires a controlled stop."
+                err(
+                    "Changing server.host on the currently active port requires a controlled stop.\n"
+                    "Run 'flexgate service stop', then 'flexgate service start'.",
+                    1,
                 )
-                print("Run 'flexgate service stop', then 'flexgate service start'.")
-                sys.exit(1)
     available, error = _probe_endpoint(*target)
     if not available:
-        print(f"Cannot bind configured endpoint {target[0]}:{target[1]}: {error}")
-        sys.exit(1)
+        err(f"Cannot bind configured endpoint {target[0]}:{target[1]}: {error}", 1)
 
 
 # ── unit transaction ──────────────────────────────────────────────
@@ -710,17 +710,17 @@ def _write_service_unit(
             file.write(_unit_content(config_path))
             temp_path = file.name
     except OSError as e:
-        print(f"Failed to prepare service unit: {e}")
-        sys.exit(1)
+        err(f"Failed to prepare service unit: {e}", 1)
 
     if backup.runtime_was_stopped:
         result = _systemctl("stop", SERVICE_NAME, capture=True)
         if result.returncode != 0:
             _remove_file(temp_path)
-            print(f"Failed to stop the existing {SERVICE_NAME}; unit was not changed.")
-            if result.stderr:
-                print(result.stderr.strip())
-            sys.exit(1)
+            err(
+                f"Failed to stop the existing {SERVICE_NAME}; unit was not changed."
+                + (f"\n{result.stderr.strip()}" if result.stderr else ""),
+                1,
+            )
 
     try:
         os.replace(temp_path, _unit_path())
@@ -728,26 +728,27 @@ def _write_service_unit(
         _remove_file(temp_path)
         if was_active:
             _systemctl("start", SERVICE_NAME, capture=True)
-        print(f"Failed to replace service unit: {e}")
-        sys.exit(1)
-    print(f"Wrote unit: {_unit_path()}")
+        err(f"Failed to replace service unit: {e}", 1)
+    ok(f"wrote unit {dim(_unit_path())}")
 
     reload_result = _systemctl("daemon-reload", capture=True)
     if reload_result.returncode != 0:
-        print("Failed to reload the systemd user manager.")
-        if reload_result.stderr:
-            print(reload_result.stderr.strip())
+        err(
+            "Failed to reload the systemd user manager."
+            + (f"\n{reload_result.stderr.strip()}" if reload_result.stderr else "")
+        )
         _restore_service_unit(backup)
         sys.exit(1)
 
     enable_result = _systemctl("enable", SERVICE_NAME, capture=True)
     if enable_result.returncode != 0:
-        print(f"Failed to enable {SERVICE_NAME}.")
-        if enable_result.stderr:
-            print(enable_result.stderr.strip())
+        err(
+            f"Failed to enable {SERVICE_NAME}."
+            + (f"\n{enable_result.stderr.strip()}" if enable_result.stderr else "")
+        )
         _restore_service_unit(backup)
         sys.exit(1)
-    print(f"Enabled {SERVICE_NAME} (will start on login)")
+    ok(f"enabled {SERVICE_NAME} {dim('(will start on login)')}")
     return backup
 
 
@@ -765,7 +766,7 @@ def _restore_service_unit(
             with open(_unit_path(), "w") as file:
                 file.write(backup.content)
     except OSError as e:
-        print(f"Warning: could not restore the previous service unit: {e}")
+        print(yellow(f"Warning: could not restore the previous service unit: {e}"))
         return
 
     _systemctl("daemon-reload", capture=True)
@@ -775,9 +776,9 @@ def _restore_service_unit(
     if backup.was_active:
         result = _systemctl("start", SERVICE_NAME, capture=True)
         if result.returncode == 0 and _wait_for_active():
-            print(f"Restored the previous {SERVICE_NAME}.")
+            ok(f"restored the previous {SERVICE_NAME}")
         else:
-            print(f"Warning: previous {SERVICE_NAME} could not be restarted.")
+            print(yellow(f"Warning: previous {SERVICE_NAME} could not be restarted."))
 
 
 def _ensure_service_unit(
@@ -788,13 +789,11 @@ def _ensure_service_unit(
 ) -> tuple[bool, UnitBackup | None]:
     was_installed = service_installed()
     if not was_installed and not install_if_missing:
-        print(f"Service not installed (no unit at {_unit_path()}).")
-        print("Run 'flexgate service install' first.")
-        sys.exit(1)
+        err(f"Service not installed (no unit at {_unit_path()}) — run 'flexgate service install' first.", 1)
     reason = _unit_repair_reason(config_path)
     if reason is None:
         return False, None
-    print(f"Repairing {SERVICE_NAME}: {reason}.")
+    print(f"{yellow('Repairing')} {SERVICE_NAME}: {dim(reason)}.")
     backup = _write_service_unit(config_path, stop_active=stop_active)
     if not was_installed:
         _enable_linger()
@@ -820,14 +819,14 @@ def _wait_for_active(timeout: float = 3.0) -> bool:
 
 
 def _print_start_failure(result: subprocess.CompletedProcess | None = None) -> None:
-    print(f"Failed to start {SERVICE_NAME}.")
+    print(red(f"Failed to start {SERVICE_NAME}."), file=sys.stderr)
     if result is not None and result.stderr:
-        print(result.stderr.strip())
+        print(result.stderr.strip(), file=sys.stderr)
     status = _systemctl("status", SERVICE_NAME, "--no-pager", "--full", capture=True)
     details = (status.stdout or status.stderr or "").strip()
     if details:
-        print(details)
-    print("Inspect logs with: journalctl --user -u flexgate -e")
+        print(details, file=sys.stderr)
+    print(f"Inspect logs with: {dim('journalctl --user -u flexgate -e')}", file=sys.stderr)
 
 
 def _start_service(config_path: str, *, restart: bool) -> None:
@@ -841,8 +840,8 @@ def _start_service(config_path: str, *, restart: bool) -> None:
         _print_start_failure()
         sys.exit(1)
     _write_applied_state(config_path)
-    verb = "Restarted" if restart else "Started"
-    print(f"{verb} {SERVICE_NAME}")
+    verb = "restarted" if restart else "started"
+    ok(f"{verb} {bold(SERVICE_NAME)}")
     _print_status_brief()
 
 
@@ -873,9 +872,11 @@ def _reload_validation_error(config_path: str) -> str | None:
 def _print_status_brief() -> None:
     active = _systemctl("is-active", SERVICE_NAME, capture=True).stdout.strip()
     enabled = _systemctl("is-enabled", SERVICE_NAME, capture=True).stdout.strip()
+    active_disp = green(active) if active == "active" else red(active or "unknown")
     print(
-        f"Service: {SERVICE_NAME}  "
-        f"active={active or 'unknown'}  enabled={enabled or 'unknown'}"
+        f"{dim('Service:')} {bold(SERVICE_NAME)}  "
+        f"{dim('active=')}{active_disp}  "
+        f"{dim('enabled=')}{enabled or 'unknown'}"
     )
 
 
@@ -896,33 +897,28 @@ def _maybe_apply_claude_settings(config_path: str, *, skip: bool) -> None:
         settings_apply(config_path)
         return
 
-    existing_token = ""
-    try:
-        with open(settings_file) as file:
-            existing = json.load(file)
-        existing_token = (existing.get("env") or {}).get("ANTHROPIC_AUTH_TOKEN", "") or ""
-    except (OSError, json.JSONDecodeError):
-        pass
-
     try:
         answer = input(
             "A Claude Code settings.json already exists at ~/.claude/settings.json. "
-            "Overwrite it to point at the gateway? [Yes/No]: "
+            "Rewrite its flexgate env keys to point at the gateway? "
+            "(other fields are preserved) [Yes/No]: "
         ).strip().lower()
     except EOFError:
         return
     if answer not in ("y", "yes"):
         return
-    settings_apply(config_path, auth_token=existing_token or None)
+    settings_apply(config_path)
 
 
 # ── public commands ───────────────────────────────────────────────
 
 def _refuse_running_legacy_gateway(gateway_pid: int) -> None:
-    print(f"A legacy unmanaged gateway is still running (PID {gateway_pid}).")
-    print("The systemd unit has been prepared, but the legacy process was left untouched.")
-    print(f"Stop it with 'kill {gateway_pid}', then run 'flexgate service start'.")
-    sys.exit(1)
+    err(
+        f"A legacy unmanaged gateway is still running (PID {gateway_pid}).\n"
+        "The systemd unit has been prepared, but the legacy process was left untouched.\n"
+        f"Stop it with 'kill {gateway_pid}', then run 'flexgate service start'.",
+        1,
+    )
 
 
 def service_install(
@@ -940,8 +936,8 @@ def service_install(
         _write_service_unit(config_path, stop_active=False)
         _enable_linger()
         if not start:
-            print(f"Legacy gateway remains running until you stop it manually (kill {legacy.gateway_pid}).")
-            print("Service installed but not started (use 'flexgate service start' afterward).")
+            print(yellow(f"Legacy gateway remains running until you stop it manually {dim(f'(kill {legacy.gateway_pid})')}."))
+            print(yellow("Service installed but not started (use 'flexgate service start' afterward)."))
             _print_status_brief()
             return
         _refuse_running_legacy_gateway(legacy.gateway_pid)
@@ -953,13 +949,13 @@ def service_install(
 
     if not start:
         if legacy.running:
-            print("Legacy gateway remains running until 'flexgate service start'.")
+            print(yellow("Legacy gateway remains running until 'flexgate service start'."))
         if not no_claude_settings:
-            print("Claude settings were left unchanged because the service was not started.")
+            print(yellow("Claude settings were left unchanged because the service was not started."))
         if _service_active():
-            print("Service unit updated; the existing process remains active until restart.")
+            print(yellow("Service unit updated; the existing process remains active until restart."))
         else:
-            print("Service installed but not started (use 'flexgate service start').")
+            print(yellow("Service installed but not started (use 'flexgate service start')."))
         _print_status_brief()
         return
 
@@ -1000,7 +996,7 @@ def service_start(
     _clean_stale_legacy_files()
 
     if was_active and not changed and _runtime_matches(config_path):
-        print(f"{SERVICE_NAME} is already active.")
+        print(f"{bold(SERVICE_NAME)} is already {green('active')}.")
         _print_status_brief()
         return
     _start_with_rollback(
@@ -1053,48 +1049,44 @@ def service_stop() -> None:
 
     available, reason = _systemd_user_available()
     if not available:
-        print(reason)
+        err(reason)
         if legacy.running:
             return
         sys.exit(1)
     if not service_installed() and not _service_active():
-        print(f"{SERVICE_NAME} is not installed.")
+        print(yellow(f"{SERVICE_NAME} is not installed."))
         return
     result = _systemctl("stop", SERVICE_NAME, capture=True)
     if result.returncode != 0:
         if result.stderr:
-            print(result.stderr.strip())
+            err(result.stderr.strip())
         sys.exit(1)
-    print(f"Stopped {SERVICE_NAME}")
+    ok(f"stopped {bold(SERVICE_NAME)}")
 
 
 def service_reload() -> None:
     _ensure_available()
     _bootstrap_applied_state()
     if not service_installed():
-        print(f"Service not installed (no unit at {_unit_path()}).")
-        sys.exit(1)
+        err(f"Service not installed (no unit at {_unit_path()}).", 1)
     if not _service_active():
-        print(f"{SERVICE_NAME} is not active.")
-        sys.exit(1)
+        err(f"{SERVICE_NAME} is not active.", 1)
     config_path = _installed_config_path()
     if not config_path:
-        print("Service unit does not record a config path.")
-        sys.exit(1)
+        err("Service unit does not record a config path.", 1)
     validation_error = _reload_validation_error(config_path)
     if validation_error:
-        print(f"Refusing to reload {SERVICE_NAME}: {validation_error}")
-        sys.exit(1)
+        err(f"Refusing to reload {SERVICE_NAME}: {validation_error}", 1)
     if not _runtime_matches(config_path):
-        print("Service config path or endpoint changed; restarting instead of reloading.")
+        print(yellow("Service config path or endpoint changed; restarting instead of reloading."))
         service_restart(config_path)
         return
     result = _systemctl("reload", SERVICE_NAME, capture=True)
     if result.returncode != 0:
         if result.stderr:
-            print(result.stderr.strip())
+            err(result.stderr.strip())
         sys.exit(1)
-    print(f"Reloaded {SERVICE_NAME}")
+    ok(f"reloaded {bold(SERVICE_NAME)}")
 
 
 def reload_service_if_active(config_path: str | None = None) -> str | None:
@@ -1107,31 +1099,31 @@ def reload_service_if_active(config_path: str | None = None) -> str | None:
         not installed_config
         or os.path.realpath(config_path) != os.path.realpath(installed_config)
     ):
-        return (
+        return yellow(
             f"Service not reloaded: active unit uses {installed_config or 'an unknown config'}, "
             f"not {os.path.abspath(config_path)}"
         )
     if not installed_config:
-        return f"Warning: could not reload {SERVICE_NAME}: unit config path is unknown"
+        return yellow(f"Warning: could not reload {SERVICE_NAME}: unit config path is unknown")
     validation_error = _reload_validation_error(installed_config)
     if validation_error:
-        return f"Warning: could not reload {SERVICE_NAME}: {validation_error}"
+        return yellow(f"Warning: could not reload {SERVICE_NAME}: {validation_error}")
     if not _runtime_matches(installed_config):
         try:
             service_restart(installed_config)
         except SystemExit:
             if _service_active():
-                return (
+                return yellow(
                     f"Warning: {SERVICE_NAME} could not switch to the new config/endpoint; "
                     "the previous process remains active"
                 )
-            return f"Warning: {SERVICE_NAME} failed to restart; inspect the journal"
-        return f"Restarted {SERVICE_NAME} because its config path or endpoint changed"
+            return yellow(f"Warning: {SERVICE_NAME} failed to restart; inspect the journal")
+        return green(f"Restarted {SERVICE_NAME} because its config path or endpoint changed")
     result = _systemctl("reload", SERVICE_NAME, capture=True)
     if result.returncode == 0:
-        return f"Reloaded {SERVICE_NAME}"
+        return green(f"Reloaded {SERVICE_NAME}")
     error = (result.stderr or result.stdout or "unknown systemctl error").strip()
-    return f"Warning: could not reload {SERVICE_NAME}: {error}"
+    return yellow(f"Warning: could not reload {SERVICE_NAME}: {error}")
 
 
 def service_uninstall() -> None:
@@ -1144,13 +1136,13 @@ def service_uninstall() -> None:
     _clean_stale_legacy_files()
     if service_installed():
         os.remove(_unit_path())
-        print(f"Removed unit: {_unit_path()}")
+        ok(f"removed unit {dim(_unit_path())}")
     else:
-        print(f"No unit file at {_unit_path()}")
+        print(dim(f"No unit file at {_unit_path()}"))
     _remove_file(STATE_FILE)
     _systemctl("daemon-reload", capture=True)
     _systemctl("reset-failed", SERVICE_NAME, capture=True)
-    print(f"{SERVICE_NAME} uninstalled.")
+    ok(f"{bold(SERVICE_NAME)} uninstalled")
 
 
 def service_status() -> str | None:
@@ -1166,40 +1158,14 @@ def service_status() -> str | None:
         return None
 
     config_path = _installed_config_path()
-    print(f"Unit: {_unit_path()}\n")
+    print(f"{bold('Unit:')} {_unit_path()}\n")
     status = _systemctl("status", SERVICE_NAME, "--no-pager", "--full", capture=True)
     details = (status.stdout or status.stderr or "").rstrip()
     if details:
         print(details)
     if config_path:
-        print(f"\nConfig: {config_path}")
+        print(f"\n{dim('Config:')} {config_path}")
     state = _read_applied_state()
     if state:
-        print(f"Applied endpoint: {state.host}:{state.port}")
+        print(f"{dim('Applied endpoint:')} {bold(f'{state.host}:{state.port}')}")
     return config_path
-
-
-def service_help() -> None:
-    print(
-        """flexgate service — primary persistent Flexgate runtime (Linux/systemd)
-
-Usage:
-  flexgate service install [--no-start] [--no-claude-settings]
-                                        Install + enable the user service.
-  flexgate service uninstall              Stop, disable and remove the service
-  flexgate service start                  Start the service
-  flexgate service stop                   Stop the service
-  flexgate service restart                Restart the service
-  flexgate service reload                 Reload config; restart for endpoint changes
-  flexgate service status                 Show service status
-  flexgate service help                   Show this help
-
-Details:
-  • Persistent serving is owned exclusively by ~/.config/systemd/user/flexgate.service.
-  • 'install' enables login linger so the service can run without an active login.
-  • Routing-only changes reload with SIGUSR1; host/port changes use restart.
-  • Logs: journalctl --user -u flexgate -e
-  • 'flexgate run' starts a foreground server for debugging only; it is not
-    a persistent serving mode.
-"""
-    )

@@ -21,7 +21,6 @@ flexgate service install                    # install + enable + start systemd u
 # Lifecycle
 flexgate service {install|start|stop|restart|reload|status|uninstall}
 flexgate run                                # foreground/debug only
-flexgate check                              # provider connectivity diagnostics
 flexgate status                             # providers, fallback chains, per-key usage, active routes
 
 # Config
@@ -31,8 +30,9 @@ flexgate config set sonnet minimax MiniMax-M3
 flexgate config edit                        # interactive curses TUI: pick provider/model per tier
 
 # Claude Code settings bridge
-flexgate settings import                    # read from ~/.claude/settings.json
-flexgate settings apply                     # write ANTHROPIC_BASE_URL → localhost
+flexgate settings import                    # read from ~/.claude/settings.json* (merges keys into api_keys)
+flexgate settings apply                     # rewrite the flexgate env keys → localhost (other fields preserved)
+flexgate settings apply --dry-run           # preview the env diff without writing
 
 # confsync config sync
 flexgate sync                               # pull: replace local config.yaml with the remote document (backup first)
@@ -41,7 +41,9 @@ flexgate sync --dry-run                     # preview changes without writing
 
 # Versioning / upgrades
 flexgate --version                          # print package version
-flexgate doctor                             # diagnose install/config problems (exit 1 on failure)
+flexgate doctor                             # diagnose install/config + upstream connectivity (exit 1 on failure)
+flexgate doctor --offline                   # skip all network checks (PyPI + upstream probing)
+flexgate check                              # DEPRECATED alias: delegates to doctor
 flexgate update                             # upgrade package via pip/pipx/uv + migrate config schema
 flexgate update --check                     # report what would change, modify nothing
 flexgate update --config-only               # only migrate the config schema
@@ -80,20 +82,20 @@ Claude Code → POST /v1/messages (model="claude-sonnet-4-6")
 
 | File | Role |
 |------|------|
-| `cli.py` | argparse CLI; service lifecycle commands, foreground `run`/`check`, config/settings/sync commands |
-| `config.py` | Pydantic-like dataclasses (`GatewayConfig`, `ProviderConfig`, `RouteConfig`, `ScheduleEntry`), YAML load/save, `TIER_PATTERNS` regex map |
+| `cli.py` | argparse CLI; service lifecycle commands, foreground `run`, config/settings/sync commands |
+| `ui.py` | Shared terminal styling: ANSI helpers (`bold`/`dim`/`red`/...), `ok`/`warn`/`fail`/`err` output helpers, `FlexgateHelpFormatter` + `FlexgateParser` (colored help on every Python version; all gated by `NO_COLOR` + stdout isatty) |
+| `config.py` | Pydantic-like dataclasses (`GatewayConfig`, `ProviderConfig`, `RouteConfig`, `ScheduleEntry`), YAML load/save, `TIER_PATTERNS` regex map, `is_placeholder_key` |
 | `router.py` | `resolve(config, model)` — schedule-first then default routes, first regex match wins |
 | `proxy.py` | `handle_request()` — httpx async proxy, per-key fallback retry loop, SSE streaming + JSON pass-through |
 | `usage.py` | `flexgate status` usage queries — per-platform adapters (MiniMax coding_plan API, Kimi Code usages API, z.ai quota API, LiteLLM `/key/info`) plus a minimal chat probe fallback |
 | `server.py` | Starlette app creation, `POST /v1/messages` endpoint, `SIGUSR1` lifespan reload |
 | `main.py` | Thin bootstrap: load config → create app → run uvicorn |
 | `service.py` | Authoritative systemd user-service install/start/stop/restart/reload/status and legacy PID migration |
-| `guardian.py` | Legacy port/PID helper; no longer owns persistent process supervision |
-| `healthcheck.py` | Pre-flight `POST /v1/messages` (max_tokens=1) to each referenced (provider, model) pair |
-| `settings.py` | Bridges `config.yaml` ↔ `~/.claude/settings.json` (import credentials, apply config) |
+| `healthcheck.py` | Upstream connectivity probing (`POST /v1/messages`, max_tokens=1) for each referenced (provider, model) pair; called by `doctor` (`flexgate check` is a deprecated alias of doctor) |
+| `settings.py` | Bridges `config.yaml` ↔ `~/.claude/settings.json`: import merges credentials into `api_keys`; apply rewrites only the managed env keys, preserving every other settings.json field |
 | `sync.py` | `flexgate sync` — pushes/pulls the whole config.yaml as an encrypted document on a confsync server (lazily imports the `confsync` client package) |
 | `migrate.py` | Config schema versioning: `config_version` marker, per-step `MIGRATIONS` chain (N → N+1), backup + atomic rewrite |
-| `doctor.py` | `flexgate doctor` — read-only diagnostics (Python, PyPI update, config schema/semantics, port, systemd, Claude settings) |
+| `doctor.py` | `flexgate doctor` — read-only diagnostics (Python, PyPI update, config schema/semantics, port, systemd, Claude settings) plus upstream connectivity via `healthcheck` (skipped with `--offline`) |
 | `update.py` | `flexgate update` — PyPI version check, package upgrade via detected installer (pipx/uv/pip), config migration, service reload; after a successful package upgrade the config migration is re-run in a fresh process so it uses the new code's schema version (`FLEXGATE_UPDATE_DELEGATED` guards against re-delegation); also the cached (24h) new-version notice shown by bare `flexgate` / `service status` |
 
 ### Key design points
@@ -110,6 +112,8 @@ Claude Code → POST /v1/messages (model="claude-sonnet-4-6")
 - **Conflict prevention**: Service startup removes stale legacy PID files, stops verified legacy Flexgate daemons, validates the configured port, and rejects temporary config paths.
 - **Tier patterns** in `config.py`: `opus`, `sonnet`, `haiku` map to regex patterns for CLI shorthand (`config set sonnet ...`).
 - **Single-source versioning**: the package version lives only in `flexgate/__init__.py` (`__version__`); hatchling reads it via `[tool.hatch.version]`. `--version`, `service status` and the bare `flexgate` command all print it.
+- **Settings apply is non-destructive** (`settings.py`): only the six managed `env` keys are rewritten (BASE_URL, AUTH_TOKEN, API_TIMEOUT_MS, three `ANTHROPIC_DEFAULT_*_MODEL`); every other settings.json field (hooks, permissions, unrelated env vars) is preserved. Token policy is one code path shared with `service install`: explicit arg → token already in the file → `"gateway"`. `settings import` merges into the provider's `api_keys` list (appends new keys, never overwrites key #1 only).
+- **Terminal styling** (`ui.py`): every colored output goes through `ui.bold`/`dim`/`ok`/`err`/... — all gated on `NO_COLOR` + stdout isatty, so pipes never receive escape codes. `err()` writes to stderr. Help screens use `FlexgateParser` (subparsers inherit it automatically); on Python 3.14+ argparse's own help theming is disabled so the look matches older versions.
 - **Config schema versioning**: `config.yaml` carries `config_version` (current: `migrate.CURRENT_CONFIG_VERSION`). Each schema change adds one rule to `migrate.MIGRATIONS` upgrading N → N+1; upgrades walk the chain step by step. `save_config` always stamps the current version; `load_config` rejects configs written by a newer flexgate; `flexgate update` applies pending migrations with a timestamped backup.
 
 ### Config location

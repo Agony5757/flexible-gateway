@@ -16,6 +16,7 @@ import sys
 import time
 
 from flexgate.config import ensure_home_dir
+from flexgate.ui import cyan, dim, err, ok, yellow
 
 DOC_NAME = "config.yaml"
 DEFAULT_APP = "flexgate"
@@ -29,10 +30,10 @@ def _import_confsync():
     except ImportError:
         # confsync-client is a declared dependency; reaching here means the
         # installation is broken (e.g. an editable install predating the dep).
-        print("The 'confsync' client package is missing from flexgate's environment.")
-        print("Reinstall/upgrade flexgate to fix it (it is a declared dependency):")
-        print("  uv tool install --force -e .        # from the flexgate repo")
-        print("or inject it manually:  uv tool inject flexgate confsync-client")
+        err("The 'confsync' client package is missing from flexgate's environment.")
+        print("Reinstall/upgrade flexgate to fix it (it is a declared dependency):", file=sys.stderr)
+        print(f"  {dim('uv tool install --force -e .')}        # from the flexgate repo", file=sys.stderr)
+        print(f"or inject it manually:  {dim('uv tool inject flexgate confsync-client')}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -42,16 +43,14 @@ def _get_client():
     try:
         client = credentials.load_client()
     except confsync.ConfsyncError as e:
-        print(str(e))
-        sys.exit(1)
+        err(str(e), 1)
     return client, DEFAULT_APP
 
 
 def sync_push(config_path: str) -> None:
     """Upload the local config.yaml to the confsync server."""
     if not os.path.exists(config_path):
-        print(f"No config at {config_path} — nothing to push.")
-        sys.exit(1)
+        err(f"No config at {config_path} — nothing to push.", 1)
     with open(config_path, encoding="utf-8") as f:
         content = f.read()
 
@@ -61,16 +60,15 @@ def sync_push(config_path: str) -> None:
         try:
             version = client.push(app, DOC_NAME, content)
         except confsync.ConfsyncError as e:
-            print(str(e))
-            sys.exit(1)
-    print(f"Pushed {config_path} → {app}/{DOC_NAME} v{version} on {client.server_url}")
+            err(str(e), 1)
+    ok(f"pushed {cyan(config_path)} → {dim(f'{app}/{DOC_NAME} v{version} on {client.server_url}')}")
 
 
 def _bootstrap_pull(client, app: str, config_path: str, remote_text: str) -> None:
     ensure_home_dir()
     with open(config_path, "w", encoding="utf-8") as f:
         f.write(remote_text)
-    print(f"Bootstrapped {config_path} from {app}/{DOC_NAME} ({client.server_url}).")
+    ok(f"bootstrapped {cyan(config_path)} from {dim(f'{app}/{DOC_NAME} ({client.server_url})')}")
 
 
 def _full_pull(client, app: str, config_path: str, remote_text: str) -> None:
@@ -78,7 +76,7 @@ def _full_pull(client, app: str, config_path: str, remote_text: str) -> None:
     shutil.copy2(config_path, backup)
     with open(config_path, "w", encoding="utf-8") as f:
         f.write(remote_text)
-    print(f"Replaced {config_path} with {app}/{DOC_NAME} (backup: {backup}).")
+    ok(f"replaced {cyan(config_path)} with {dim(f'{app}/{DOC_NAME}')} (backup: {dim(backup)})")
 
 
 def sync_pull(config_path: str, dry_run: bool = False) -> None:
@@ -89,18 +87,17 @@ def sync_pull(config_path: str, dry_run: bool = False) -> None:
         try:
             remote_text = client.pull(app, DOC_NAME)
         except confsync.ConfsyncError as e:
-            print(str(e))
-            sys.exit(1)
+            err(str(e), 1)
 
     if not os.path.exists(config_path):
         if dry_run:
-            print(f"Dry run: would bootstrap {config_path} from {app}/{DOC_NAME}.")
+            print(f"{yellow('Dry run:')} would bootstrap {config_path} from {app}/{DOC_NAME}.")
             return
         _bootstrap_pull(client, app, config_path, remote_text)
         return
 
     if dry_run:
-        print(f"Dry run: would replace {config_path} with {app}/{DOC_NAME}.")
+        print(f"{yellow('Dry run:')} would replace {config_path} with {app}/{DOC_NAME}.")
         return
     _full_pull(client, app, config_path, remote_text)
     from flexgate.service import reload_service_if_active

@@ -24,27 +24,22 @@ from flexgate.config import (
     save_config,
 )
 from flexgate import __version__
-from flexgate.healthcheck import check_providers, print_results
 from flexgate.main import run_server
+from flexgate.ui import (
+    FlexgateParser,
+    bold as _bold,
+    cyan as _cyan,
+    dim as _dim,
+    err,
+    green as _green,
+    ok as _ok,
+    red as _red,
+    yellow as _yellow,
+)
 
 PATTERN_TIERS = {v: k for k, v in TIER_PATTERNS.items()}
 
-# ── terminal styling ───────────────────────────────────────────────
-_TTY = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
-
-
-def _st(text: str, code: str) -> str:
-    return f"\x1b[{code}m{text}\x1b[0m" if _TTY else text
-
-
-def _bold(t: str) -> str: return _st(t, "1")
-def _dim(t: str) -> str: return _st(t, "2")
-def _red(t: str) -> str: return _st(t, "31")
-def _green(t: str) -> str: return _st(t, "32")
-def _yellow(t: str) -> str: return _st(t, "33")
-def _cyan(t: str) -> str: return _st(t, "36")
-
-# ── run / check (foreground debugging) ─────────────────────────────
+# ── run (foreground debugging) ─────────────────────────────────────
 
 def _service_config_arg(args: argparse.Namespace) -> str | None:
     if getattr(args, "config_explicit", False):
@@ -89,16 +84,10 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 
 def cmd_check(args: argparse.Namespace) -> None:
-    config = load_config(args.config)
-    timeout = getattr(args, "verify_timeout", 15.0)
-    print(f"Verifying provider connectivity (timeout {timeout:g}s)...")
-    results = check_providers(config, timeout=timeout)
-    print_results(results)
-    failures = [r for r in results if not r.ok]
-    if failures:
-        print(f"\n{len(failures)} target(s) failed.")
-        sys.exit(1)
-    print(f"\nAll {len(results)} target(s) OK.")
+    """Deprecated alias: upstream probing moved into `flexgate doctor`."""
+    print(_dim("'flexgate check' has moved to 'flexgate doctor' (upstream probing is now part of it)."))
+    print(_dim("Note: doctor also checks the local install, so its exit code can be 1 even when all upstreams are OK."))
+    cmd_doctor(args)
 
 
 # ── status (providers / fallback / usage / routes) ─────────────────
@@ -106,9 +95,7 @@ def cmd_check(args: argparse.Namespace) -> None:
 def cmd_status(args: argparse.Namespace) -> None:
     config_path = args.config
     if not os.path.exists(config_path):
-        print(f"Config not found: {config_path}")
-        print("Run 'flexgate config init' to create one.")
-        sys.exit(1)
+        err(f"Config not found: {config_path} — run 'flexgate config init' to create one.", 1)
 
     config = load_config(config_path)
 
@@ -147,9 +134,7 @@ def cmd_status(args: argparse.Namespace) -> None:
 def cmd_usage(args: argparse.Namespace) -> None:
     config_path = args.config
     if not os.path.exists(config_path):
-        print(f"Config not found: {config_path}")
-        print("Run 'flexgate config init' to create one.")
-        sys.exit(1)
+        err(f"Config not found: {config_path} — run 'flexgate config init' to create one.", 1)
 
     config = load_config(config_path)
     _print_usage(config, getattr(args, "usage_timeout", 15.0))
@@ -178,7 +163,7 @@ def cmd_settings_import(args: argparse.Namespace) -> None:
 
 def cmd_settings_apply(args: argparse.Namespace) -> None:
     from flexgate.settings import settings_apply
-    settings_apply(args.config)
+    settings_apply(args.config, dry_run=getattr(args, "dry_run", False))
 
 
 # ── sync subcommand ────────────────────────────────────────────────
@@ -262,13 +247,13 @@ def _hot_reload(config_path: str) -> None:
 def cmd_config_init(args: argparse.Namespace) -> None:
     config_path = args.config
     if os.path.exists(config_path):
-        print(f"Config already exists: {config_path}")
+        print(_yellow(f"Config already exists: {config_path}"))
         return
     with open(config_path, "w") as f:
         f.write(f"config_version: {CURRENT_CONFIG_VERSION}\n\n")
         f.write(DEFAULT_CONFIG_TEMPLATE)
-    print(f"Created: {config_path}")
-    print("Edit the file to add your API keys and providers.")
+    _ok(f"created {config_path}")
+    print(_dim("Edit the file to add your API keys and providers."))
 
 
 def cmd_config_show(args: argparse.Namespace) -> None:
@@ -276,29 +261,28 @@ def cmd_config_show(args: argparse.Namespace) -> None:
 
     config_path = args.config
     if not os.path.exists(config_path):
-        print(f"Config not found: {config_path}")
-        print("Run 'flexgate config init' to create one.")
+        err(f"Config not found: {config_path} — run 'flexgate config init' to create one.")
         return
 
     config = load_config(config_path)
 
-    print(f"Config: {os.path.abspath(config_path)}")
-    print(f"Server: {config.server.host}:{config.server.port}")
+    print(f"{_dim('Config:')} {os.path.abspath(config_path)}")
+    print(f"{_dim('Server:')} {_cyan(f'{config.server.host}:{config.server.port}')}")
 
-    print(f"\nProviders:")
+    print("\n" + _bold("Providers"))
     for name, prov in config.providers.items():
-        print(f"  {name:16s} {prov.base_url}")
+        print(f"  {_bold(_cyan(name.ljust(16)))} {_dim(prov.base_url)}")
         for i, k in enumerate(prov.api_keys):
-            note = f"  [{k.note}]" if k.note else ""
-            print(f"  {'':16s} key #{i + 1}: {_mask_key(k.key)}{note}")
+            note = f"  {_green('[' + k.note + ']')}" if k.note else ""
+            print(f"  {'':16s} {_dim(f'key #{i + 1}:')} {_yellow(_mask_key(k.key))}{note}")
 
-    print(f"\nRoutes (default):")
+    print("\n" + _bold("Routes") + _dim(" (default)"))
     _print_route_table(config.routes)
 
     if config.schedule:
         now = datetime.now()
         now_min = now.hour * 60 + now.minute
-        print(f"\nSchedule:")
+        print("\n" + _bold("Schedule"))
         for entry in config.schedule:
             s, e = entry.start_minutes, entry.end_minutes
             start_s = f"{s // 60:02d}:{s % 60:02d}"
@@ -310,8 +294,8 @@ def cmd_config_show(args: argparse.Namespace) -> None:
             else:
                 active = True
             label = entry.name or f"{start_s}-{end_s}"
-            marker = " ← active" if active else ""
-            print(f"  {label} ({start_s}-{end_s}){marker}:")
+            marker = _green(" ← active") if active else ""
+            print(f"  {label} {_dim(f'({start_s}-{end_s})')}{marker}:")
             _print_route_table(entry.routes, indent=4)
 
 
@@ -327,10 +311,11 @@ def cmd_config_set(args: argparse.Namespace) -> None:
         unknown = [t for t in tiers if t not in TIER_PATTERNS]
         if not tiers or unknown:
             bad = unknown[0] if unknown else tier
-            print(f"Unknown tier '{bad}'.")
-            print(f"Available: all, {', '.join(TIER_PATTERNS)}")
-            print("Combine multiple tiers with commas, e.g. opus,sonnet")
-            sys.exit(1)
+            err(
+                f"Unknown tier '{bad}'. Available: all, {', '.join(TIER_PATTERNS)}.\n"
+                "Combine multiple tiers with commas, e.g. opus,sonnet",
+                1,
+            )
         # De-duplicate while preserving order
         seen_tiers: set[str] = set()
         tiers = [t for t in tiers if not (t in seen_tiers or seen_tiers.add(t))]
@@ -338,9 +323,7 @@ def cmd_config_set(args: argparse.Namespace) -> None:
     config_path = args.config
 
     if not os.path.exists(config_path):
-        print(f"Config not found: {config_path}")
-        print("Run 'flexgate config init' first.")
-        sys.exit(1)
+        err(f"Config not found: {config_path} — run 'flexgate config init' first.", 1)
 
     config = load_config(config_path)
 
@@ -353,9 +336,10 @@ def cmd_config_set(args: argparse.Namespace) -> None:
     else:
         if model_arg is not None:
             # model arg given but target isn't a known provider
-            print(f"Provider '{target}' not found.")
-            print(f"Known providers: {', '.join(config.providers)}")
-            sys.exit(1)
+            err(
+                f"Provider '{target}' not found. Known providers: {', '.join(config.providers)}",
+                1,
+            )
 
         # Try to resolve target as a model name from existing routes
         all_routes = list(config.routes)
@@ -374,32 +358,42 @@ def cmd_config_set(args: argparse.Namespace) -> None:
         if len(matches) == 1:
             provider_name, model_override = matches[0]
         elif len(matches) > 1:
-            print(f"Ambiguous: '{target}' found in multiple providers:")
-            for prov, mdl in sorted(matches):
-                print(f"  flexgate config set {tier} {prov} {mdl}")
-            sys.exit(1)
+            err(
+                f"Ambiguous: '{target}' found in multiple providers:\n  "
+                + "\n  ".join(
+                    f"flexgate config set {tier} {prov} {mdl}"
+                    for prov, mdl in sorted(matches)
+                ),
+                1,
+            )
         else:
-            print(f"Unknown target '{target}'.")
-            print(f"Not a known provider or model name.\n")
-            print(f"Known providers: {', '.join(config.providers)}")
             known_models = sorted({r.model for r in all_routes if r.model})
+            detail = f"Known providers: {', '.join(config.providers)}"
             if known_models:
-                print(f"Known models: {', '.join(known_models)}")
-            print(f"\nUsage: flexgate config set {tier} <provider> [model]")
-            sys.exit(1)
+                detail += f"\nKnown models: {', '.join(known_models)}"
+            err(
+                f"Unknown target '{target}' — not a known provider or model name.\n"
+                f"{detail}\n"
+                f"Usage: flexgate config set {tier} <provider> [model]",
+                1,
+            )
 
     if provider_name not in config.providers:
-        print(f"Provider '{provider_name}' not found in config.")
-        print(f"Known providers: {', '.join(config.providers)}")
-        print(f"\nAdd it to {config_path} first (base_url and api_key required).")
-        sys.exit(1)
+        err(
+            f"Provider '{provider_name}' not found in config. "
+            f"Known providers: {', '.join(config.providers)}\n"
+            f"Add it to {config_path} first (base_url and api_key required).",
+            1,
+        )
 
     provider = config.providers[provider_name]
     if model_override is None and not provider.available_models:
-        print(f"Provider '{provider_name}' has no 'available_models' to fall back to.")
-        print(f"Either add 'available_models' to provider '{provider_name}' in {config_path},")
-        print(f"or specify a model: flexgate config set {tier} {provider_name} <model>")
-        sys.exit(1)
+        err(
+            f"Provider '{provider_name}' has no 'available_models' to fall back to.\n"
+            f"Either add 'available_models' to provider '{provider_name}' in {config_path},\n"
+            f"or specify a model: flexgate config set {tier} {provider_name} <model>",
+            1,
+        )
 
     # Update existing route or insert new one for each target tier
     for tier_name in tiers:
@@ -413,8 +407,8 @@ def cmd_config_set(args: argparse.Namespace) -> None:
     elif provider.available_models:
         display += f" / {provider.available_models[0]} (fallback)"
     for tier_name in tiers:
-        print(f"Set {tier_name} ({TIER_PATTERNS[tier_name]}) → {display}")
-    print(f"Saved: {config_path}")
+        print(f"{_green('Set')} {_bold(tier_name)} {_dim(f'({TIER_PATTERNS[tier_name]})')} {_dim('→')} {_cyan(display)}")
+    print(f"{_dim('Saved:')} {config_path}")
 
     # Hot-reload the authoritative systemd service, if it is active.
     _hot_reload(config_path)
@@ -871,12 +865,12 @@ def cmd_service_reload(args: argparse.Namespace) -> None:
 
 def cmd_service_status(args: argparse.Namespace) -> None:
     from flexgate.service import service_status
-    print(f"flexgate {__version__}")
+    print(_bold(f"flexgate {__version__}"))
     config_path = service_status() or args.config
     try:
         config = load_config(config_path)
     except Exception as e:
-        print(f"\nRoutes unavailable: could not load {config_path}: {e}")
+        print(_yellow(f"\nRoutes unavailable: could not load {config_path}: {e}"))
         return
     _print_active_routes(config)
     _print_update_notice()
@@ -887,26 +881,25 @@ def _print_update_notice() -> None:
     from flexgate.update import update_notice
     notice = update_notice()
     if notice:
-        print(f"\n{notice}")
+        print(f"\n{_yellow(notice)}")
 
 
-def cmd_service_help(args: argparse.Namespace) -> None:
-    from flexgate.service import service_help
-    service_help()
+def _service_help(svc_parser) -> None:
+    svc_parser.print_help()
 
 
 def _print_sync_help() -> None:
-    print("""\
-confsync sync (flexgate sync):
-  Pushes/pulls config.yaml as an encrypted document on your confsync server.
-  Requires a one-time 'confsync login --server https://<server>' (shared
-  credentials at ~/.confsync/credentials.json); the confsync-client package
-  is a declared dependency. 'flexgate sync' (pull) replaces the local
-  config.yaml with the remote document (a timestamped backup is kept); on a
-  machine without config.yaml the pull bootstraps the file. Use
-  'flexgate sync push' to upload, and --dry-run to preview. The document
-  lives at app 'flexgate', name 'config.yaml'. Changes hot-reload the
-  running service automatically.
+    print(_bold("confsync sync (flexgate sync):"))
+    print(f"""\
+  {_dim("Pushes/pulls config.yaml as an encrypted document on your confsync server.")}
+  {_dim("Requires a one-time")} 'confsync login --server https://<server>' {_dim("(shared")}
+  {_dim("credentials at ~/.confsync/credentials.json); the confsync-client package")}
+  {_dim("is a declared dependency. 'flexgate sync' (pull) replaces the local")}
+  {_dim("config.yaml with the remote document (a timestamped backup is kept); on a")}
+  {_dim("machine without config.yaml the pull bootstraps the file. Use")}
+  {_dim("'flexgate sync push' to upload, and --dry-run to preview. The document")}
+  {_dim("lives at app 'flexgate', name 'config.yaml'. Changes hot-reload the")}
+  {_dim("running service automatically.")}
 """)
 
 
@@ -914,7 +907,11 @@ confsync sync (flexgate sync):
 
 def cmd_doctor(args: argparse.Namespace) -> None:
     from flexgate.doctor import run_doctor
-    sys.exit(run_doctor(args.config, offline=getattr(args, "offline", False)))
+    sys.exit(run_doctor(
+        args.config,
+        offline=getattr(args, "offline", False),
+        probe_timeout=getattr(args, "verify_timeout", 15.0),
+    ))
 
 
 def cmd_update(args: argparse.Namespace) -> None:
@@ -939,42 +936,42 @@ def cmd_default(args: argparse.Namespace) -> None:
 
     config_path = args.config
 
-    print(f"flexgate {__version__}")
+    print(_bold(f"flexgate {__version__}"))
     _print_update_notice()
     if service_active() or service_installed():
         service_status()
         try:
             config = load_config(config_path)
         except Exception as e:
-            print(f"\nRoutes unavailable: could not load {config_path}: {e}")
+            print(_yellow(f"\nRoutes unavailable: could not load {config_path}: {e}"))
             return
         _print_active_routes(config)
         if not service_active():
-            print("\nThe service is installed but not running.")
+            print(_yellow("\nThe service is installed but not running."))
             print("Start it with:  flexgate service start")
         else:
-            print("\nThe service is running.")
-        print("Stop/restart with:  flexgate service stop|restart")
+            print(_green("\nThe service is running."))
+        print(_dim("Stop/restart with:  flexgate service stop|restart"))
         return
 
     # Not installed: show how to set up and install the service.
-    print("The flexgate service is not installed yet.\n")
+    print(_yellow("The flexgate service is not installed yet.\n"))
     if not os.path.exists(config_path):
         print("1. Create a config and add your API keys:")
-        print("     flexgate config init       # writes a template to ~/.flexgate/config.yaml")
-        print("     flexgate config edit       # or pick providers/models interactively")
+        print(_dim("     flexgate config init       # writes a template to ~/.flexgate/config.yaml"))
+        print(_dim("     flexgate config edit       # or pick providers/models interactively"))
         print("2. Install and start the persistent service:")
-        print("     flexgate service install")
+        print(_dim("     flexgate service install"))
     else:
         print(f"Found an existing config at: {config_path}")
         print("Install and start the persistent service with:")
-        print("  flexgate service install")
+        print(_dim("  flexgate service install"))
 
 
 # ── main ───────────────────────────────────────────────────────────
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
+    parser = FlexgateParser(
         prog="flexgate",
         description=(
             "Flexgate — Flexible API Gateway for Claude Code. "
@@ -987,7 +984,18 @@ def main() -> None:
     sub = parser.add_subparsers(dest="group")
 
     # flexgate service ... (primary persistent runtime)
-    svc = sub.add_parser("service", help="Manage the primary systemd user service")
+    svc = sub.add_parser(
+        "service",
+        help="Manage the primary systemd user service",
+        description="Manage the primary systemd user service (persistent Flexgate runtime).",
+        epilog=(
+            "'install' enables login linger so the service runs without an active "
+            "login. Routing-only config changes hot-reload via SIGUSR1 ('service "
+            "reload'); host/port changes use restart. Logs: journalctl --user -u "
+            "flexgate -e. 'flexgate run' is a foreground debugging server, not a "
+            "persistent serving mode."
+        ),
+    )
     svc_sub = svc.add_subparsers(dest="command")
     svc_install = svc_sub.add_parser("install", help="Install + enable the systemd user service")
     svc_install.add_argument(
@@ -1014,10 +1022,13 @@ def main() -> None:
         default=None,
         help="Override listen port for this foreground run only",
     )
-    check_p = sub.add_parser("check", help="Verify upstream provider connectivity")
+    check_p = sub.add_parser(
+        "check",
+        help="(deprecated: use 'doctor') verify upstream provider connectivity",
+    )
     check_p.add_argument(
         "--verify-timeout", type=float, default=15.0,
-        help="Per-provider connectivity check timeout in seconds (default: 15.0)"
+        help=argparse.SUPPRESS,
     )
 
     # flexgate status ...
@@ -1047,7 +1058,14 @@ def main() -> None:
     st = sub.add_parser("settings", help="Manage Claude Code settings")
     st_sub = st.add_subparsers(dest="command")
     st_sub.add_parser("import", help="Import ~/.claude/settings.json* into config.yaml")
-    st_sub.add_parser("apply", help="Apply config.yaml to ~/.claude/settings.json")
+    apply_p = st_sub.add_parser(
+        "apply",
+        help="Apply config.yaml env to ~/.claude/settings.json (non-destructive: other fields are preserved)",
+    )
+    apply_p.add_argument(
+        "--dry-run", action="store_true",
+        help="Show the env changes without writing settings.json"
+    )
 
     # flexgate sync ...
     sy = sub.add_parser("sync", help="Sync config.yaml with a confsync server (default: pull)")
@@ -1064,10 +1082,17 @@ def main() -> None:
     sub.add_parser("help", help="Show help, including confsync sync details")
 
     # flexgate doctor / update ...
-    doc_p = sub.add_parser("doctor", help="Diagnose installation and config problems")
+    doc_p = sub.add_parser(
+        "doctor",
+        help="Diagnose installation, config and upstream connectivity problems",
+    )
     doc_p.add_argument(
         "--offline", action="store_true",
-        help="Skip the PyPI check for a newer flexgate release"
+        help="Skip all network checks (PyPI release check + upstream probing)"
+    )
+    doc_p.add_argument(
+        "--verify-timeout", type=float, default=15.0,
+        help="Per-provider upstream probe timeout in seconds (default: 15.0)"
     )
     up_p = sub.add_parser("update", help="Upgrade flexgate (pip) and migrate the config schema")
     up_p.add_argument(
@@ -1145,7 +1170,7 @@ def main() -> None:
             "restart": cmd_service_restart,
             "reload": cmd_service_reload,
             "status": cmd_service_status,
-            "help": cmd_service_help,
+            "help": lambda _args: _service_help(svc),
         }
         handler = handlers.get(args.command)
         if not handler:

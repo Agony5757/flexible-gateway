@@ -95,7 +95,7 @@ flexgate service uninstall           # 停止、禁用并删除 unit
 
 ```bash
 flexgate --version               # 打印版本号（service status / 裸 flexgate 也会显示）
-flexgate doctor                  # 只读体检：Python、PyPI 新版、配置 schema、端口、systemd、Claude settings
+flexgate doctor                  # 只读体检：Python、PyPI 新版、配置 schema、端口、systemd、Claude settings、上游连通性
 flexgate doctor --offline        # 跳过 PyPI 检查
 flexgate update                  # 一键升级：pip/pipx/uv 升级包 + 迁移配置 schema + 热重载服务
 flexgate update --check          # 只报告将要做什么，不改动
@@ -132,7 +132,7 @@ Trusted Publisher（repo: `Agony5757/flexible-gateway`，workflow: `release.yml`
 
 ### 上游连通性预检
 
-运行 `flexgate check` 会向每个 **被路由引用的 `(provider, model)` 组合**
+运行 `flexgate doctor` 会向每个 **被路由引用的 `(provider, model)` 组合**
 发送一次 `POST /v1/messages`（`max_tokens=1`，消耗约 1~2 token），用于主动检查：
 
 - DNS / TCP / TLS 不可达（`base_url` 写错、网络不通）
@@ -140,7 +140,10 @@ Trusted Publisher（repo: `Agony5757/flexible-gateway`，workflow: `release.yml`
 - 仍是默认占位符（如 `your-zai-api-key`）
 - Provider 侧 5xx 故障
 
-可通过 `--verify-timeout N` 调整每个 provider 的超时时间（默认 15 秒）。
+可通过 `--verify-timeout N` 调整每个 provider 的超时时间（默认 15 秒），
+`--offline` 跳过全部网络检查（PyPI 新版检查 + 上游探测）。
+旧的 `flexgate check` 命令仍可用，但已弃用：它会打印提示并委托给 `doctor`
+（注意 doctor 还检查本地安装，退出码语义更宽）。
 
 ### 状态总览与用量查询（`flexgate status` / `flexgate usage`）
 
@@ -170,13 +173,12 @@ fallback 链、当前生效的路由，并逐一查询**每个 key** 的用量/�
 如果某平台的专用接口调用失败，flexgate 会自动退化为 minimal probe 再试一次。
 用量查询接口多为平台内部接口，可能随时变动；查询结果仅供参考。
 
-### 前台调试与连通性检查
+### 前台调试
 
-`run` / `check` 是独立的顶层调试命令，不属于持久化服务模式：
+`run` 是独立的顶层调试命令，不属于持久化服务模式：
 
 ```bash
 flexgate run                       # 单个前台进程，仅用于开发/调试
-flexgate check                     # 上游 provider 连通性检测
 ```
 
 非 systemd 环境只能使用 `flexgate run` 前台运行。`--port PORT` 也只对
@@ -242,9 +244,16 @@ Flexgate config  —  ~/.flexgate/config.yaml
 ### Settings 管理
 
 ```bash
-flexgate settings import         # 从 ~/.claude/settings.json* 导入凭证到 config.yaml
-flexgate settings apply          # 将 config.yaml 配置写入 ~/.claude/settings.json
+flexgate settings import         # 从 ~/.claude/settings.json* 导入凭证到 config.yaml（多 key 追加）
+flexgate settings apply          # 将网关 env 写入 ~/.claude/settings.json（非破坏性）
+flexgate settings apply --dry-run  # 预览将要修改的 env 键，不写文件
 ```
+
+`apply` 只重写 flexgate 托管的 6 个 env 键（BASE_URL、AUTH_TOKEN、
+API_TIMEOUT_MS、三个 `ANTHROPIC_DEFAULT_*_MODEL`），settings.json 中的
+其他字段（hooks、permissions、自定义 env 等）全部保留；写入前自动备份。
+`import` 会把新 key 追加到 provider 的 `api_keys` 列表（已存在则跳过），
+不会覆盖已有 key。
 
 ### 全局参数
 

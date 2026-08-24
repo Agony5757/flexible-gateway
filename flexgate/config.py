@@ -21,6 +21,18 @@ def ensure_home_dir() -> None:
     os.makedirs(FLEXGATE_HOME, exist_ok=True)
 
 
+# Heuristic placeholders that the default template ships with; callers use
+# this to avoid hitting upstream with template keys.
+PLACEHOLDER_MARKERS = ("your-", "xxx", "changeme", "placeholder")
+
+
+def is_placeholder_key(key: str) -> bool:
+    if not key:
+        return True
+    low = key.lower()
+    return any(marker in low for marker in PLACEHOLDER_MARKERS)
+
+
 @dataclass
 class ApiKey:
     """One API key for a provider, with an optional human-readable note."""
