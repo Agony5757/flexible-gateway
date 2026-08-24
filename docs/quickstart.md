@@ -49,5 +49,5 @@ provider。日常管理常用：
 ```bash
 flexgate status                  # providers + fallback 链 + 每个 key 的用量 + 当前路由
 flexgate config edit             # 交互式调整每个 tier 的 provider/model
-journalctl --user -u flexgate -e # 查看服务日志
+flexgate log                     # 查看服务日志（-r 只看路由决策行）
 ```

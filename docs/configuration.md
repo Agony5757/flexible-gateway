@@ -8,7 +8,7 @@
 | `~/.flexgate/service-state.json` | 最近一次成功启动所应用的 config 路径与 endpoint |
 | `~/.flexgate/update-check.json` | PyPI 新版本检查的缓存（24h 有效期） |
 | `~/.config/systemd/user/flexgate.service` | 唯一的持久化服务 unit |
-| systemd journal | 服务日志（`journalctl --user -u flexgate`） |
+| systemd journal | 服务日志（`flexgate log`，即 `journalctl --user -u flexgate`） |
 
 旧版本的 `~/.flexgate/flexgate.pid`、`flexgate.guardian.pid` 和
 `flexgate.log` 不再属于当前运行架构；service 启动时会安全清理 PID 残留，

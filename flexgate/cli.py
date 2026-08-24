@@ -903,6 +903,19 @@ def _print_sync_help() -> None:
 """)
 
 
+# ── log ────────────────────────────────────────────────────────────
+
+def cmd_log(args: argparse.Namespace) -> None:
+    from flexgate.service import service_log
+    service_log(
+        lines=args.lines,
+        since=args.since,
+        follow=args.follow,
+        grep=args.grep,
+        routes=args.routes,
+    )
+
+
 # ── doctor / update ───────────────────────────────────────────────
 
 def cmd_doctor(args: argparse.Namespace) -> None:
@@ -1054,6 +1067,29 @@ def main() -> None:
         help="Per-key usage query timeout in seconds (default: 15.0)"
     )
 
+    # flexgate log ...
+    log_p = sub.add_parser("log", help="Show gateway logs from the systemd journal")
+    log_p.add_argument(
+        "-n", "--lines", type=int, default=None, metavar="N",
+        help="Number of journal entries to show (default: 50; unlimited when --since is given; with --grep/-r, filtering applies after this window)"
+    )
+    log_p.add_argument(
+        "-f", "--follow", action="store_true",
+        help="Keep printing new entries as they arrive (Ctrl-C to stop)"
+    )
+    log_p.add_argument(
+        "--since", default=None, metavar="WHEN",
+        help='Show entries not older than WHEN, e.g. "10 min ago" or "2026-08-24 12:00"'
+    )
+    log_p.add_argument(
+        "--grep", default=None, metavar="PAT",
+        help="Show only lines containing PAT (case-insensitive)"
+    )
+    log_p.add_argument(
+        "-r", "--routes", action="store_true",
+        help="Show only route lines: [schedule] model -> provider (model) | status | ms"
+    )
+
     # flexgate settings ...
     st = sub.add_parser("settings", help="Manage Claude Code settings")
     st_sub = st.add_subparsers(dest="command")
@@ -1135,6 +1171,9 @@ def main() -> None:
 
     elif args.group == "usage":
         cmd_usage(args)
+
+    elif args.group == "log":
+        cmd_log(args)
 
     elif args.group == "settings":
         handlers = {

@@ -2,7 +2,7 @@
 
 ```text
 usage: flexgate [-h] [--config CONFIG] [--version]
-                {service,run,check,status,usage,settings,sync,help,doctor,update,config} ...
+                {service,run,check,status,usage,log,settings,sync,help,doctor,update,config} ...
 ```
 
 全局参数：
@@ -45,7 +45,7 @@ flexgate service uninstall           # 停止、禁用并删除 unit
 - `service reload` 和 `config set/edit` 会在仅路由变化时发送 SIGUSR1；
   如果 endpoint 变化，则先检查再 restart。若只改 host、仍复用当前 port，
   为避免误停服务会要求先执行 `service stop`，再执行 `service start`。
-- 查看日志：`journalctl --user -u flexgate -e`。
+- 查看日志：`flexgate log`（`-f` 跟随、`--since`/`--grep` 过滤、`-r` 只看路由决策行）。
 
 ## 状态总览与用量查询
 
@@ -58,6 +58,29 @@ flexgate usage --usage-timeout 30
 ```
 
 各平台的用量查询适配器详见[用量查询](usage.md)。
+
+## 查看日志（log）
+
+```bash
+flexgate log                     # 最近 50 行服务日志（systemd user journal）
+flexgate log -n 200              # 最近 200 行
+flexgate log -f                  # 实时跟随（Ctrl-C 退出）
+flexgate log --since "10 min ago"
+flexgate log --grep 429          # 只显示包含 429 的行（大小写不敏感）
+flexgate log -r                  # 只看路由决策行
+flexgate log -f -r               # 实时观察每个请求被路由到哪个 provider/模型
+```
+
+`flexgate log` 读取 `flexgate.service` 的 systemd 用户日志（等价于
+`journalctl --user -u flexgate`，输出为单时间戳的 cat 格式）。`-r` 只显示
+每个请求完成时的路由决策行：
+
+```text
+[default] claude-sonnet-4-6 -> zai (glm-5.3) | 200 | 6676ms
+```
+
+想知道"刚才那条回复到底是哪个模型服务的"，看这一行即可。前台调试用的
+`flexgate run` 日志直接打印在终端，不进 journal。
 
 ## 上游连通性预检
 

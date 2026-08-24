@@ -126,6 +126,11 @@ async def handle_request(
         else:
             resp, retryable = await _regular_proxy(client, url, headers, body, provider.name, strip_images)
         if not retryable:
+            logger.info(
+                "Provider %s: served by key #%d (%s%s)",
+                provider.name, index + 1, _mask_key(entry.key),
+                f" [{entry.note}]" if entry.note else "",
+            )
             return resp
         last_error = resp if isinstance(resp, JSONResponse) else last_error
         route.key_index = (index + 1) % n

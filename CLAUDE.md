@@ -22,6 +22,7 @@ flexgate service install                    # install + enable + start systemd u
 flexgate service {install|start|stop|restart|reload|status|uninstall}
 flexgate run                                # foreground/debug only
 flexgate status                             # providers, fallback chains, per-key usage, active routes
+flexgate log                                # service journal (-f follow, -r route lines only)
 
 # Config
 flexgate config {init|show|set|path|edit}
@@ -82,10 +83,10 @@ Claude Code → POST /v1/messages (model="claude-sonnet-4-6")
 
 | File | Role |
 |------|------|
-| `cli.py` | argparse CLI; service lifecycle commands, foreground `run`, config/settings/sync commands |
+| `cli.py` | argparse CLI; service lifecycle commands, foreground `run`, config/settings/sync commands, `flexgate log` journal viewer |
 | `ui.py` | Shared terminal styling: ANSI helpers (`bold`/`dim`/`red`/...), `ok`/`warn`/`fail`/`err` output helpers, `FlexgateHelpFormatter` + `FlexgateParser` (colored help on every Python version; all gated by `NO_COLOR` + stdout isatty) |
 | `config.py` | Pydantic-like dataclasses (`GatewayConfig`, `ProviderConfig`, `RouteConfig`, `ScheduleEntry`), YAML load/save, `TIER_PATTERNS` regex map, `is_placeholder_key` |
-| `router.py` | `resolve(config, model)` — schedule-first then default routes, first regex match wins |
+| `router.py` | `resolve(config, model)` — schedule-first then default routes, first regex match wins; model aliases normalized before matching |
 | `proxy.py` | `handle_request()` — httpx async proxy, per-key fallback retry loop, SSE streaming + JSON pass-through |
 | `usage.py` | `flexgate status` usage queries — per-platform adapters (MiniMax coding_plan API, Kimi Code usages API, z.ai quota API, LiteLLM `/key/info`) plus a minimal chat probe fallback |
 | `server.py` | Starlette app creation, `POST /v1/messages` endpoint, `SIGUSR1` lifespan reload |
@@ -101,6 +102,7 @@ Claude Code → POST /v1/messages (model="claude-sonnet-4-6")
 ### Key design points
 
 - **Regex-first routing**: Routes are regex patterns matched against the `model` field in the request body. First match wins. A catch-all `".*"` pattern at the end handles fallback.
+- **Model alias normalization** (`router.py`): before matching, bare aliases (`sonnet`/`opus`/`haiku`/`default`, case-insensitive, optional `[plan]` suffix) map to `claude-<tier>` prefixes (`default` → sonnet, Claude Code's default tier), and legacy numbered names (`claude-3-7-sonnet-latest`) reduce to their tier prefix; everything else passes through unchanged, so custom patterns and the catch-all behave exactly as before.
 - **Model resolution & `available_models` fallback**: A route may omit `model`; `router.resolve()` then falls back to the provider's first `available_models` entry, so `model_override` handed to the proxy is always a concrete name. `config._parse_routes` rejects routes that omit `model` on a provider with no `available_models` — so adding a provider without models requires an explicit `model` on every route using it.
 - **Proxy rewrite contract** (`proxy.py`): the upstream request gets the provider's `x-api-key` plus a fixed header set, and the JSON `model` field is rewritten only when the route set an override. Streaming responses are forwarded as raw bytes (`aiter_bytes`), never parsed.
 - **Key fallback** (`proxy.py`): a provider's `api_keys` list holds one or more keys for the same upstream (entries are key strings or `{key, note}` mappings; `note` is a free-form label shown by `flexgate status` and in fallback logs). Multiple accounts on one upstream — e.g. several MiniMax subscriptions — belong in ONE provider, not separate ones. Each *route* has an active-key pointer (`active_key` in YAML, 1-based; `RouteConfig.key_index` 0-based, default first key): requests on that route start from the pointed key, and on a retryable failure (HTTP 401/402/403/429/500/502/503/529, connect error, or timeout) the next key is tried and the pointer advances with it (in memory only, wrapping around — it is not written back to the file); every key is tried at most once and a full circle of failures returns the last error. The pointer is set interactively via `flexgate config edit` → "api keys" (pick a route, with live per-key usage) or by editing the route's `active_key` directly. `resolve()` (`router.py`) returns the matched `RouteConfig` so the proxy can read/advance its pointer. Streaming requests can only fall back before the upstream returns 200. `_regular_proxy`/`_stream_proxy` return `(response, retryable)`; `handle_request` owns the loop and returns the last error when all keys fail. The legacy `api_key` + `fallback_keys` schema is still parsed (`config._parse_api_keys`); migration v3 → v4 rewrites it to `api_keys`. `ProviderConfig.api_key` remains as a first-key property (getter/setter) for the settings import code.
