@@ -28,38 +28,38 @@ def _in_window(minutes: int, start: int, end: int) -> bool:
     return minutes >= start or minutes < end
 
 
-def _match_route(routes: list[RouteConfig], model: str) -> tuple[ProviderConfig, str | None] | None:
+def _match_route(routes: list[RouteConfig], model: str) -> RouteConfig | None:
     for route in routes:
         if route.pattern.search(model):
-            return route.provider_name, route.model
+            return route
     return None
 
 
-def resolve(config: GatewayConfig, model: str) -> tuple[ProviderConfig, str | None, str]:
-    """Return (provider, model_override, schedule_name) for the matching route.
+def resolve(config: GatewayConfig, model: str) -> tuple[ProviderConfig, str | None, str, RouteConfig]:
+    """Return (provider, model_override, schedule_name, route) for the match.
 
     model_override is always a concrete model name: if the matched route omits
     'model', it falls back to the provider's first available_models entry.
+    The route object itself is returned so the proxy can read/advance the
+    route's active-key pointer.
     """
     now = _current_minutes()
 
     for entry in config.schedule:
         if _in_window(now, entry.start_minutes, entry.end_minutes):
-            match = _match_route(entry.routes, model)
-            if match:
-                prov_name, model_override = match
-                provider = config.providers[prov_name]
-                model_override = _resolve_model(provider, model_override)
+            route = _match_route(entry.routes, model)
+            if route:
+                provider = config.providers[route.provider_name]
+                model_override = _resolve_model(provider, route.model)
                 label = entry.name or f"{entry.start_minutes//60:02d}:{entry.start_minutes%60:02d}-{entry.end_minutes//60:02d}:{entry.end_minutes%60:02d}"
                 logger.debug("schedule [%s] matched for model %s", label, model)
-                return provider, model_override, label
+                return provider, model_override, label, route
 
-    match = _match_route(config.routes, model)
-    if match:
-        prov_name, model_override = match
-        provider = config.providers[prov_name]
-        model_override = _resolve_model(provider, model_override)
-        return provider, model_override, "default"
+    route = _match_route(config.routes, model)
+    if route:
+        provider = config.providers[route.provider_name]
+        model_override = _resolve_model(provider, route.model)
+        return provider, model_override, "default", route
 
     raise NoRouteMatchError(model)
 

@@ -13,6 +13,7 @@ except ImportError:  # pragma: no cover - curses is unavailable on some platform
 
 from flexgate.config import (
     GatewayConfig,
+    ProviderConfig,
     RouteConfig,
     CURRENT_CONFIG_VERSION,
     DEFAULT_CONFIG_TEMPLATE,
@@ -27,6 +28,21 @@ from flexgate.healthcheck import check_providers, print_results
 from flexgate.main import run_server
 
 PATTERN_TIERS = {v: k for k, v in TIER_PATTERNS.items()}
+
+# ── terminal styling ───────────────────────────────────────────────
+_TTY = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+
+
+def _st(text: str, code: str) -> str:
+    return f"\x1b[{code}m{text}\x1b[0m" if _TTY else text
+
+
+def _bold(t: str) -> str: return _st(t, "1")
+def _dim(t: str) -> str: return _st(t, "2")
+def _red(t: str) -> str: return _st(t, "31")
+def _green(t: str) -> str: return _st(t, "32")
+def _yellow(t: str) -> str: return _st(t, "33")
+def _cyan(t: str) -> str: return _st(t, "36")
 
 # ── run / check (foreground debugging) ─────────────────────────────
 
@@ -64,7 +80,7 @@ def _print_active_routes(config: GatewayConfig) -> None:
     if not active_routes:
         return
 
-    print(f"\nRoutes ({label}):")
+    print("\n" + _bold("Routes") + _dim(f" ({label})"))
     _print_route_table(active_routes)
 
 
@@ -96,28 +112,29 @@ def cmd_status(args: argparse.Namespace) -> None:
 
     config = load_config(config_path)
 
-    print(f"flexgate {__version__}")
-    print(f"Config: {os.path.abspath(config_path)}")
-    print(f"Server: {config.server.host}:{config.server.port}")
+    print(_bold(f"flexgate {__version__}"))
+    print(f"  {_dim('config:')}  {os.path.abspath(config_path)}")
+    print(f"  {_dim('server:')}  {_cyan(f'{config.server.host}:{config.server.port}')}")
 
-    print(f"\nProviders:")
+    print("\n" + _bold("Providers"))
     for name, prov in config.providers.items():
         keys = prov.api_keys
-        key_info = f"key: {_mask_key(keys[0].key)}"
+        pad = " " * 16
+        print(f"  {_bold(_cyan(name.ljust(16)))} {_dim(prov.base_url)}")
+        key_info = f"{_yellow(_mask_key(keys[0].key))}"
         if keys[0].note:
-            key_info += f" [{keys[0].note}]"
+            key_info += f" {_green('[' + keys[0].note + ']')}"
         if len(keys) > 1:
-            key_info += f"  (+{len(keys) - 1} fallback key(s))"
-        models = ", ".join(prov.available_models) if prov.available_models else "(no models listed)"
-        print(f"  {name:16s} {prov.base_url}")
-        print(f"  {'':16s} {key_info}")
-        print(f"  {'':16s} models: {models}")
+            key_info += _dim(f"  (+{len(keys) - 1} fallback key(s))")
+        print(f"  {pad} {_dim('key:')} {key_info}")
+        models = ", ".join(prov.available_models) if prov.available_models else _dim("(no models listed)")
+        print(f"  {pad} {_dim('models:')} {models}")
         if len(keys) > 1:
-            chain = " → ".join(
-                f"#{i + 1} {_mask_key(k.key)}" + (f"[{k.note}]" if k.note else "")
+            chain = _dim(" → ").join(
+                f"#{i + 1} {_yellow(_mask_key(k.key))}" + (_green(f"[{k.note}]") if k.note else "")
                 for i, k in enumerate(keys)
             )
-            print(f"  {'':16s} fallback: {chain}")
+            print(f"  {pad} {_dim('fallback:')} {chain}")
 
     _print_active_routes(config)
 
@@ -141,15 +158,15 @@ def cmd_usage(args: argparse.Namespace) -> None:
 def _print_usage(config, timeout: float) -> None:
     from flexgate.usage import run_usage_check
 
-    print(f"\nUsage (timeout {timeout:g}s per key):")
+    print("\n" + _bold("Usage") + _dim(f" (timeout {timeout:g}s per key)"))
     usage = run_usage_check(config, timeout=timeout)
     for name, results in usage.items():
-        print(f"  {name}:")
+        print(f"  {_bold(_cyan(name))}")
         for r in results:
-            marker = "✓" if r.ok else "✗"
-            print(f"    {marker} {r.key_label}  [{r.method}]")
+            marker = _green("✓") if r.ok else _red("✗")
+            print(f"    {marker} {r.key_label}  {_dim(r.method)}")
             for line in r.lines:
-                print(f"        {line}")
+                print(f"        {line if r.ok else _red(line)}")
 
 
 # ── settings subcommands ────────────────────────────────────────────
@@ -175,7 +192,6 @@ def cmd_sync(args: argparse.Namespace) -> None:
         sync_pull(
             args.config,
             dry_run=getattr(args, "dry_run", False),
-            full=getattr(args, "full", False),
         )
 
 
@@ -189,20 +205,27 @@ def _mask_key(key: str) -> str:
 
 def _print_route_table(routes: list[RouteConfig], indent: int = 2) -> None:
     prefix = " " * indent
-    for r in routes:
-        tier = PATTERN_TIERS.get(r.pattern.pattern, "")
-        tier_col = f"({tier}) " if tier else ""
+    tiers = [PATTERN_TIERS.get(r.pattern.pattern, "") for r in routes]
+    tier_w = max((len(t) + 3 for t in tiers), default=0)  # "(tier)" + space
+    pat_w = max((len(r.pattern.pattern) for r in routes), default=0)
+    for r, tier in zip(routes, tiers):
+        if tier:
+            t = f"({tier})"
+            tier_col = _yellow(t) + " " * (tier_w - len(t))
+        else:
+            tier_col = " " * tier_w
         target = r.provider_name
         if r.model:
             target += f" / {r.model}"
-        print(f"{prefix}{tier_col}{r.pattern.pattern:20s} → {target}")
+        if r.key_index:
+            target += f" (key #{r.key_index + 1})"
+        print(f"{prefix}{tier_col}{r.pattern.pattern.ljust(pat_w)}  {_dim('→')} {_cyan(target)}")
 
 
-def _set_tier_route(
-    config: GatewayConfig, tier_name: str, provider_name: str, model_override: str | None
+def _set_route(
+    config: GatewayConfig, pattern: str, provider_name: str, model_override: str | None
 ) -> None:
-    """Update the default route for a tier, or insert one before the catch-all."""
-    pattern = TIER_PATTERNS[tier_name]
+    """Update the default route for a pattern, or insert one before the catch-all."""
     for route in config.routes:
         if route.pattern.pattern == pattern:
             route.provider_name = provider_name
@@ -380,7 +403,7 @@ def cmd_config_set(args: argparse.Namespace) -> None:
 
     # Update existing route or insert new one for each target tier
     for tier_name in tiers:
-        _set_tier_route(config, tier_name, provider_name, model_override)
+        _set_route(config, TIER_PATTERNS[tier_name], provider_name, model_override)
 
     save_config(config, config_path)
 
@@ -407,9 +430,8 @@ _CANCEL = object()  # sentinel: user backed out of a menu
 _CUSTOM = object()  # sentinel: user chose "enter a custom model"
 
 
-def _tier_current(config: GatewayConfig, tier_name: str) -> tuple[str | None, str | None]:
-    """Return (provider_name, model) for a tier's default route, or (None, None)."""
-    pattern = TIER_PATTERNS[tier_name]
+def _route_current(config: GatewayConfig, pattern: str) -> tuple[str | None, str | None]:
+    """Return (provider_name, model) for a pattern's default route, or (None, None)."""
     for route in config.routes:
         if route.pattern.pattern == pattern:
             return route.provider_name, route.model
@@ -531,9 +553,9 @@ def _confirm(stdscr, question: str, yes_label: str = "Yes, save changes", no_lab
 
 # ── tier edit flow ─────────────────────────────────────────────────
 
-def _edit_tier(stdscr, config: GatewayConfig, provider_names: list[str], tier: str) -> bool:
-    """Pick a provider then a model for `tier`. Returns True if a change was applied."""
-    cur_prov, cur_model = _tier_current(config, tier)
+def _edit_tier(stdscr, config: GatewayConfig, provider_names: list[str], label: str, pattern: str) -> bool:
+    """Pick a provider then a model for a route. Returns True if a change was applied."""
+    cur_prov, cur_model = _route_current(config, pattern)
 
     prov_options = []
     for name in provider_names:
@@ -543,7 +565,7 @@ def _edit_tier(stdscr, config: GatewayConfig, provider_names: list[str], tier: s
 
     start = provider_names.index(cur_prov) if cur_prov in provider_names else 0
     header = [
-        f"Tier '{tier}'  —  current: {_format_target(cur_prov, cur_model)}",
+        f"{label}  —  current: {_format_target(cur_prov, cur_model)}",
         "Choose a provider:",
         "",
     ]
@@ -571,7 +593,7 @@ def _edit_tier(stdscr, config: GatewayConfig, provider_names: list[str], tier: s
                     break
 
     header = [
-        f"Tier '{tier}'  —  provider: {provider_name}",
+        f"{label}  —  provider: {provider_name}",
         "Choose a model:",
         "",
     ]
@@ -591,8 +613,91 @@ def _edit_tier(stdscr, config: GatewayConfig, provider_names: list[str], tier: s
     if model is None and not prov.available_models:
         return False
 
-    _set_tier_route(config, tier, provider_name, model)
+    _set_route(config, pattern, provider_name, model)
     return True
+
+
+# ── api key selection flow ─────────────────────────────────────────
+
+def _query_provider_key_usage(provider: ProviderConfig):
+    """Live usage/validity check for every key of one provider (like status)."""
+    import asyncio
+
+    import httpx
+
+    from flexgate.usage import check_key_usage
+
+    async def _run():
+        async with httpx.AsyncClient() as client:
+            return await asyncio.gather(*[
+                check_key_usage(client, provider, entry, i, 15.0)
+                for i, entry in enumerate(provider.api_keys)
+            ])
+
+    return asyncio.run(_run())
+
+
+def _edit_route_key(stdscr, config: GatewayConfig, route: RouteConfig) -> bool:
+    """Pick the active key for one route. Returns True if the pointer changed."""
+    prov = config.providers[route.provider_name]
+    n = len(prov.api_keys)
+
+    stdscr.erase()
+    _addline(stdscr, 0, 0, f"Route '{route.pattern.pattern}' — querying key usage for {prov.name}…", curses.A_BOLD)
+    stdscr.refresh()
+    try:
+        results = _query_provider_key_usage(prov)
+        query_err = None
+    except Exception as e:
+        results, query_err = None, e
+
+    options = []
+    for i, entry in enumerate(prov.api_keys):
+        label = f"#{i + 1} {_mask_key(entry.key)}"
+        if entry.note:
+            label += f" [{entry.note}]"
+        if results is not None:
+            r = results[i]
+            mark = "✓" if r.ok else "✗"
+            detail = "; ".join(r.lines[:2])
+            label = f"{mark} {label}" + (f" — {detail}" if detail else "")
+        if i == route.key_index % n:
+            label += "   (active)"
+        options.append((label, i))
+
+    header = [
+        f"Route '{route.pattern.pattern}' → {route.provider_name}  —  choose the active key:",
+        "(requests on this route start from this key; fallback advances the pointer automatically)",
+    ]
+    if query_err is not None:
+        header.append(f"usage query failed: {query_err}")
+    header.append("")
+
+    sel = _menu_select(stdscr, header, options, index=route.key_index % n)
+    if sel is _CANCEL or sel == route.key_index % n:
+        return False
+    route.key_index = sel
+    return True
+
+
+def _route_label(config: GatewayConfig, route: RouteConfig) -> str:
+    prov = config.providers[route.provider_name]
+    n = len(prov.api_keys)
+    active = prov.api_keys[route.key_index % n]
+    label = f"{route.pattern.pattern:16s} → {_format_target(route.provider_name, route.model)}"
+    label += f"  key #{route.key_index % n + 1} {_mask_key(active.key)}"
+    if active.note:
+        label += f" [{active.note}]"
+    return label
+
+
+def _edit_keys(stdscr, config: GatewayConfig) -> bool:
+    """Pick a route, then its active key. Returns True if a change was applied."""
+    options = [(_route_label(config, route), route) for route in config.routes]
+    route = _menu_select(stdscr, ["API keys  —  choose a route:", ""], options)
+    if route is _CANCEL:
+        return False
+    return _edit_route_key(stdscr, config, route)
 
 
 def _edit_loop(stdscr, config: GatewayConfig, config_path: str):
@@ -605,6 +710,7 @@ def _edit_loop(stdscr, config: GatewayConfig, config_path: str):
 
     tiers = list(TIER_PATTERNS)
     provider_names = list(config.providers)
+    rows = tiers + ["fallback", "api keys"]
     index = 0
     dirty = False
     saved_any = False
@@ -614,13 +720,16 @@ def _edit_loop(stdscr, config: GatewayConfig, config_path: str):
     while True:
         header = [
             f"Flexgate config  —  {os.path.abspath(config_path)}",
-            "↑/↓ move · Enter edit tier · s save · q quit",
+            "↑/↓ move · Enter edit · s save · q quit",
             "",
         ]
         labels = []
         for tier in tiers:
-            prov, model = _tier_current(config, tier)
+            prov, model = _route_current(config, TIER_PATTERNS[tier])
             labels.append(f"{tier:8s}  {_format_target(prov, model)}")
+        prov, model = _route_current(config, ".*")
+        labels.append(f"{'fallback':8s}  {_format_target(prov, model)}")
+        labels.append("api keys  select the active key per route")
         footer = [
             "",
             "● unsaved changes" if dirty else "○ no unsaved changes",
@@ -630,18 +739,33 @@ def _edit_loop(stdscr, config: GatewayConfig, config_path: str):
 
         key = stdscr.getch()
         if key in (curses.KEY_UP, ord("k")):
-            index = (index - 1) % len(tiers)
+            index = (index - 1) % len(rows)
             status = ""
         elif key in (curses.KEY_DOWN, ord("j")):
-            index = (index + 1) % len(tiers)
+            index = (index + 1) % len(rows)
             status = ""
         elif key in (curses.KEY_ENTER, 10, 13):
-            if _edit_tier(stdscr, config, provider_names, tiers[index]):
-                dirty = True
-                prov, model = _tier_current(config, tiers[index])
-                status = f"Set {tiers[index]} → {_format_target(prov, model)}"
+            row = rows[index]
+            if row in TIER_PATTERNS:
+                if _edit_tier(stdscr, config, provider_names, f"Tier '{row}'", TIER_PATTERNS[row]):
+                    dirty = True
+                    prov, model = _route_current(config, TIER_PATTERNS[row])
+                    status = f"Set {row} → {_format_target(prov, model)}"
+                else:
+                    status = ""
+            elif row == "fallback":
+                if _edit_tier(stdscr, config, provider_names, "Fallback route '.*'", ".*"):
+                    dirty = True
+                    prov, model = _route_current(config, ".*")
+                    status = f"Set fallback → {_format_target(prov, model)}"
+                else:
+                    status = ""
             else:
-                status = ""
+                if _edit_keys(stdscr, config):
+                    dirty = True
+                    status = "Updated active key"
+                else:
+                    status = ""
         elif key == ord("s"):
             if dirty:
                 save_config(config, config_path)
@@ -777,13 +901,12 @@ confsync sync (flexgate sync):
   Pushes/pulls config.yaml as an encrypted document on your confsync server.
   Requires a one-time 'confsync login --server https://<server>' (shared
   credentials at ~/.confsync/credentials.json); the confsync-client package
-  is a declared dependency. 'flexgate sync' (pull) updates api_keys of
-  matching providers and imports providers present only remotely; local
-  routes/schedules are untouched. On a machine without config.yaml the pull
-  bootstraps the whole file. Use --full to replace the local config entirely
-  (a timestamped backup is kept), 'flexgate sync push' to upload, and
-  --dry-run to preview. The document lives at app 'flexgate', name
-  'config.yaml'. Changes hot-reload the running service automatically.
+  is a declared dependency. 'flexgate sync' (pull) replaces the local
+  config.yaml with the remote document (a timestamped backup is kept); on a
+  machine without config.yaml the pull bootstraps the file. Use
+  'flexgate sync push' to upload, and --dry-run to preview. The document
+  lives at app 'flexgate', name 'config.yaml'. Changes hot-reload the
+  running service automatically.
 """)
 
 
@@ -930,15 +1053,11 @@ def main() -> None:
     sy = sub.add_parser("sync", help="Sync config.yaml with a confsync server (default: pull)")
     sy.add_argument(
         "action", nargs="?", choices=["pull", "push"], default="pull",
-        help="pull (default): download and merge; push: upload local config.yaml"
+        help="pull (default): replace local config with the remote document (backup first); push: upload local config.yaml"
     )
     sy.add_argument(
         "--dry-run", action="store_true",
-        help="Show which keys would change without writing the config"
-    )
-    sy.add_argument(
-        "--full", action="store_true",
-        help="Replace the whole local config with the remote document (backup first)"
+        help="Show what would change without writing the config"
     )
 
     # flexgate help ...

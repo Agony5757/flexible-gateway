@@ -4,11 +4,9 @@ Connection details come from the shared confsync credentials
 (``confsync login --server <url>`` → ~/.confsync/credentials.json); the
 document is fixed at app "flexgate", name "config.yaml".
 
-Pull semantics:
-  * local config missing → bootstrap: the remote document becomes the config
-  * local config present → merge: api_keys of matching providers are updated,
-    providers present only remotely are imported; local routes/schedules are
-    untouched (``--full`` replaces the whole file instead, with a backup)
+Pull semantics: the remote document always replaces the local config
+(a timestamped backup is kept first; on a machine without config.yaml the
+pull simply bootstraps the file).
 """
 from __future__ import annotations
 
@@ -17,26 +15,10 @@ import shutil
 import sys
 import time
 
-from flexgate.config import ApiKey, ProviderConfig, ensure_home_dir, load_config, save_config
+from flexgate.config import ensure_home_dir
 
 DOC_NAME = "config.yaml"
 DEFAULT_APP = "flexgate"
-
-
-def _remote_primary_key(rp: dict) -> str:
-    """Extract a remote provider's primary key from either config schema."""
-    key = str(rp.get("api_key", "") or "")
-    if key:
-        return key
-    raw_keys = rp.get("api_keys") or []
-    if not raw_keys:
-        return ""
-    first = raw_keys[0]
-    if isinstance(first, str):
-        return first
-    if isinstance(first, dict):
-        return str(first.get("key", "") or "")
-    return ""
 
 
 def _import_confsync():
@@ -52,12 +34,6 @@ def _import_confsync():
         print("  uv tool install --force -e .        # from the flexgate repo")
         print("or inject it manually:  uv tool inject flexgate confsync-client")
         sys.exit(1)
-
-
-def _mask_key(key: str) -> str:
-    if len(key) <= 8:
-        return "***"
-    return key[:4] + "***" + key[-4:]
 
 
 def _get_client():
@@ -105,10 +81,8 @@ def _full_pull(client, app: str, config_path: str, remote_text: str) -> None:
     print(f"Replaced {config_path} with {app}/{DOC_NAME} (backup: {backup}).")
 
 
-def sync_pull(config_path: str, dry_run: bool = False, full: bool = False) -> None:
-    """Pull the remote config: bootstrap, full replace (--full), or key merge."""
-    import yaml
-
+def sync_pull(config_path: str, dry_run: bool = False) -> None:
+    """Pull the remote config: replace the local file entirely (backup first)."""
     client, app = _get_client()
     confsync, _ = _import_confsync()
     with client:
@@ -125,79 +99,11 @@ def sync_pull(config_path: str, dry_run: bool = False, full: bool = False) -> No
         _bootstrap_pull(client, app, config_path, remote_text)
         return
 
-    if full:
-        if dry_run:
-            print(f"Dry run: would replace {config_path} with {app}/{DOC_NAME}.")
-            return
-        _full_pull(client, app, config_path, remote_text)
-        from flexgate.service import reload_service_if_active
-        msg = reload_service_if_active(config_path)
-        if msg:
-            print(msg)
-        return
-
-    # ── merge mode: keys + new providers, local routes/schedules kept ──
-    try:
-        remote_raw = yaml.safe_load(remote_text)
-    except yaml.YAMLError as e:
-        print(f"Remote document {app}/{DOC_NAME} is not valid YAML: {e}")
-        sys.exit(1)
-    if not isinstance(remote_raw, dict):
-        print(f"Remote document {app}/{DOC_NAME} is not a config mapping.")
-        sys.exit(1)
-    remote_providers = remote_raw.get("providers", {}) or {}
-
-    config = load_config(config_path)
-    updated: list[str] = []
-    imported: list[str] = []
-    unchanged: list[str] = []
-
-    for name, rp in remote_providers.items():
-        remote_key = _remote_primary_key(rp)
-        if name in config.providers:
-            prov = config.providers[name]
-            if remote_key and remote_key != prov.api_key:
-                prov.api_key = remote_key
-                updated.append(name)
-            else:
-                unchanged.append(name)
-        else:
-            base_url = str(rp.get("base_url", ""))
-            if not (base_url and remote_key):
-                print(f"  WARNING: remote provider '{name}' lacks base_url/api_keys, skipped.")
-                continue
-            config.providers[name] = ProviderConfig(
-                name=name,
-                base_url=base_url.rstrip("/"),
-                api_keys=[ApiKey(key=remote_key)],
-                available_models=[str(m) for m in (rp.get("available_models") or [])],
-            )
-            imported.append(name)
-
-    for name in updated:
-        print(f"  {name:16s} updated  (key: {_mask_key(config.providers[name].api_key)})")
-    for name in imported:
-        print(f"  {name:16s} imported (new provider, base_url: {config.providers[name].base_url})")
-    for name in unchanged:
-        print(f"  {name:16s} unchanged")
-    for name in [n for n in config.providers if n not in remote_providers]:
-        print(f"  {name:16s} local-only (not in remote {app}/{DOC_NAME})")
-
-    if not (updated or imported):
-        print("\nAll keys are up to date.")
-        return
-
     if dry_run:
-        n = len(updated) + len(imported)
-        print(f"\nDry run: {n} provider(s) would be updated/imported. No changes written.")
+        print(f"Dry run: would replace {config_path} with {app}/{DOC_NAME}.")
         return
-
-    save_config(config, config_path)
-    print(f"\nUpdated {len(updated)} key(s), imported {len(imported)} provider(s). Saved: {config_path}")
-
-    # Hot-reload the authoritative systemd service, if it is active.
+    _full_pull(client, app, config_path, remote_text)
     from flexgate.service import reload_service_if_active
-
     msg = reload_service_if_active(config_path)
     if msg:
         print(msg)

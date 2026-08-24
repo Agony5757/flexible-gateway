@@ -40,7 +40,7 @@ async def messages(request: Request) -> JSONResponse:
     model_name = body_json.get("model", "")
 
     try:
-        provider, model_override, schedule_name = resolve(config, model_name)
+        provider, model_override, schedule_name, route = resolve(config, model_name)
     except NoRouteMatchError as exc:
         return _error_json("not_found_error", str(exc), 503)
 
@@ -49,7 +49,7 @@ async def messages(request: Request) -> JSONResponse:
 
     incoming_headers = dict(request.headers)
     resp = await handle_request(
-        client, body_bytes, body_json, incoming_headers, provider, model_override,
+        client, body_bytes, body_json, incoming_headers, provider, model_override, route,
     )
 
     elapsed_ms = int((time.monotonic() - t0) * 1000)

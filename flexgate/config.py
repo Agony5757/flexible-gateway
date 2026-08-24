@@ -57,6 +57,11 @@ class RouteConfig:
     pattern: re.Pattern[str]
     provider_name: str
     model: str | None = None
+    # Pointer into the provider's api_keys: which key requests on this route
+    # start from (0-based index; serialized as the 1-based `active_key`
+    # field). The proxy advances it in memory when a key fails and fallback
+    # kicks in; a full circle with every key failing returns the last error.
+    key_index: int = 0
 
 
 @dataclass
@@ -141,10 +146,22 @@ def _parse_routes(raw_routes: list[dict], providers: dict[str, ProviderConfig]) 
                 f"has no 'available_models' to fall back to. "
                 f"Add 'available_models' to provider '{prov_name}' or set an explicit 'model' on the route."
             )
+        n_keys = len(providers[prov_name].api_keys)
+        active_raw = r.get("active_key", 1)
+        if (
+            isinstance(active_raw, bool)
+            or not isinstance(active_raw, int)
+            or not (1 <= active_raw <= n_keys)
+        ):
+            raise ValueError(
+                f"Route '{r['pattern']}': 'active_key' must be an integer between 1 "
+                f"and {n_keys} (a position in provider '{prov_name}' api_keys)"
+            )
         routes.append(RouteConfig(
             pattern=re.compile(r["pattern"]),
             provider_name=prov_name,
             model=model,
+            key_index=active_raw - 1,
         ))
     return routes
 
@@ -223,6 +240,8 @@ def _serialize_routes(routes: list[RouteConfig]) -> list[dict]:
         r: dict = {"pattern": route.pattern.pattern, "provider": route.provider_name}
         if route.model:
             r["model"] = route.model
+        if route.key_index:
+            r["active_key"] = route.key_index + 1
         result.append(r)
     return result
 
@@ -297,10 +316,13 @@ server:
 # `api_keys`: one or more API keys for the SAME upstream; each entry is either
 # a plain key string or {key, note} where `note` is a free-form label stored
 # in the config (shown by `flexgate status`, included in fallback logs).
-# When a key fails with a retryable error (401/402/403/429/5xx/529 or a
-# connection error — e.g. quota exhausted or provider overloaded), the request
-# is retried with the next key in order. Multiple accounts on the same
-# upstream should be configured this way instead of as separate providers.
+# Multiple accounts on the same upstream should be configured this way
+# instead of as separate providers. A route's `active_key` (see below)
+# selects which key its requests start from; when that key fails with a
+# retryable error (401/402/403/429/5xx/529 or a connection error — e.g.
+# quota exhausted or provider overloaded), the request is retried with the
+# next key and the pointer advances automatically. If every key fails, the
+# last error is returned.
 providers:
   minimax:
     base_url: "https://api.minimaxi.com/anthropic"
@@ -359,6 +381,9 @@ claude_settings:
 # Routes are matched top-to-bottom; first match wins.
 # `model:` is optional — when omitted, the provider's first available_models
 # entry is used. A provider referenced without `model` MUST have available_models.
+# `active_key:` is optional — the 1-based position in the provider's api_keys
+# that requests on this route start from (default 1). Fallback advances the
+# pointer; a full circle of failures returns the last error.
 routes:
   - pattern: "^claude-opus"
     provider: ustc

@@ -128,17 +128,24 @@ flexgate config set haiku MiniMax-M3
 
 ```text
 Flexgate config  —  ~/.flexgate/config.yaml
-↑/↓ move · Enter edit tier · s save · q quit
+↑/↓ move · Enter edit · s save · q quit
 
 ▶ opus      ustc / deepseek-v4-pro
   sonnet    ustc / deepseek-v4-pro
   haiku     ustc / deepseek-v4-pro
+  fallback  ustc / deepseek-v4-pro
+  api keys  select the active key per route
 
 ○ no unsaved changes
 ```
 
-- 方向键选中某个 tier（opus/sonnet/haiku），回车进入：先从候选
+- 方向键选中某个 tier（opus/sonnet/haiku）或 `fallback`（兜底路由
+  `.*`，未命中任何 tier 的请求走它），回车进入：先从候选
   **provider** 列表选择，再从该 provider 的候选 **model** 列表选择。
+- 选中 `api keys` 回车进入：先选一条**路由**，再选它的 **active key**
+  （该路由的请求从这个 key 开始；fallback 会自动前移指针，所有 key
+  轮换一圈都失败则返回错误）。key 列表会实时查询每个 key 的用量/有效性
+  （与 `flexgate status` 相同），并标注当前 active 的 key。
 - model 列表包含：`available_models` 中的各个模型、「使用 provider 默认
   （首个可用模型，不写死 model）」、以及「自定义模型…」（手动输入）。
 - 按 `s` 保存（并向运行中的网关发送 SIGUSR1 热重载，**无需重启即生效**），
@@ -192,11 +199,10 @@ settings.json，将 `ANTHROPIC_BASE_URL` 指向本地网关，并保留原有的
 confsync 配置段）：
 
 ```bash
-flexgate sync              # 默认 pull：下载并合并远端配置
+flexgate sync              # 默认 pull：用远端文档整体替换本地配置（先备份）
 flexgate sync pull         # 同上
 flexgate sync push         # 上传本地 config.yaml
-flexgate sync --dry-run    # 只显示哪些 key 会变化，不写配置
-flexgate sync --full       # 用远端文档整体替换本地配置（先备份）
+flexgate sync --dry-run    # 只预览，不写配置
 ```
 
 更多细节见 `flexgate help`。

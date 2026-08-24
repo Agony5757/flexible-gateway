@@ -6,7 +6,7 @@ import logging
 import httpx
 from starlette.responses import JSONResponse, StreamingResponse
 
-from flexgate.config import ProviderConfig
+from flexgate.config import ProviderConfig, RouteConfig
 
 logger = logging.getLogger("flexgate.proxy")
 
@@ -85,6 +85,7 @@ async def handle_request(
     incoming_headers: dict[str, str],
     provider: ProviderConfig,
     model_override: str | None,
+    route: RouteConfig,
 ) -> JSONResponse | StreamingResponse:
     if model_override:
         body_json["model"] = model_override
@@ -99,14 +100,21 @@ async def handle_request(
     url = f"{provider.base_url}/v1/messages"
     is_stream = body_json.get("stream", False)
 
-    # Key fallback: try each api_keys entry in order until one succeeds or
-    # fails with a non-retryable error. Streaming responses can only fall
-    # back before the upstream returns 200 (once bytes flow to the client
-    # the response is committed).
+    # Key fallback: try keys starting from the route's active-key pointer.
+    # When a key fails with a retryable error the pointer advances to the
+    # next key (in memory), so later requests start from the working key.
+    # Each key is tried at most once — if the whole circle fails, the last
+    # error is returned. Streaming responses can only fall back before the
+    # upstream returns 200 (once bytes flow to the client the response is
+    # committed).
     keys = provider.api_keys
+    n = len(keys)
+    start = route.key_index % n
     last_error: JSONResponse | None = None
-    for index, entry in enumerate(keys):
-        if index > 0:
+    for step in range(n):
+        index = (start + step) % n
+        entry = keys[index]
+        if step > 0:
             logger.warning(
                 "Provider %s: falling back to key #%d (%s%s)",
                 provider.name, index + 1, _mask_key(entry.key),
@@ -120,13 +128,16 @@ async def handle_request(
         if not retryable:
             return resp
         last_error = resp if isinstance(resp, JSONResponse) else last_error
-        if index < len(keys) - 1:
+        route.key_index = (index + 1) % n
+        if step < n - 1:
             logger.warning(
-                "Provider %s key #%d (%s%s) failed; trying next key",
+                "Provider %s key #%d (%s%s) failed; switching active key to #%d",
                 provider.name, index + 1, _mask_key(entry.key),
                 f" [{entry.note}]" if entry.note else "",
+                (index + 1) % n + 1,
             )
 
+    logger.error("Provider %s: all %d key(s) failed", provider.name, n)
     assert last_error is not None
     return last_error
 

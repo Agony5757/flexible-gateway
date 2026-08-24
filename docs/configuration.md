@@ -60,6 +60,7 @@ routes:                          # 从上到下匹配，首个命中生效
   - pattern: "^claude-sonnet"
     provider: minimax
     model: "MiniMax-M3"
+    active_key: 2               # 可选：该路由从 minimax 的第 2 个 key 开始用（1 起始，默认 1）
   - pattern: "^claude-haiku"
     provider: minimax
     model: "MiniMax-M3"
@@ -80,6 +81,7 @@ routes:                          # 从上到下匹配，首个命中生效
 | `routes[].pattern` | 正则匹配请求中的 model 字段 |
 | `routes[].provider` | 路由到的 provider 名称 |
 | `routes[].model` | 可选，替换发给 provider 的模型名 |
+| `routes[].active_key` | 可选，1 起始的 provider api_keys 序号，该路由的请求从哪个 key 开始（默认 1，即第一个 key） |
 | `schedule[].name` | 定时规则名称 |
 | `schedule[].start/end` | 时间窗口（HH:MM 格式，支持跨夜如 22:00-06:00） |
 | `schedule[].routes` | 该时间窗口内生效的路由（格式同 `routes`） |
@@ -91,18 +93,25 @@ routes:                          # 从上到下匹配，首个命中生效
 `{key, note}` 加一个存在配置里的备注（`flexgate status` 和 fallback 日志
 都会显示 note，方便分辨是哪个账号的 key）：
 
-- 请求先走第一个 key；失败时按列表顺序自动重试后续 key，直到某个 key
-  成功或返回不可重试的错误。
+- 每条路由有一个「当前 key」指针（路由上的 `active_key`，默认指向
+  provider 的第一个 key）：该路由的请求从指针指向的 key 开始；key 失败
+  时自动换用下一个 key（循环一圈），指针也随之自动前进——后续请求直接
+  从能用的 key 开始。**所有 key 轮换一圈都失败时，请求返回最后一次的
+  错误**。指针在运行时的前进只存在于网关进程内存中，不写回配置文件。
 - 触发切换的条件：HTTP **401 / 402 / 403 / 429 / 500 / 502 / 503 / 529**
   （key 失效、余额/额度耗尽、限流、平台过载）以及连接错误、超时。
   其他 4xx（如 400 请求格式错误）不会触发切换。
 - 流式请求只有在上游返回非 200 状态码之前才能切换 key；一旦开始吐
   token，响应已提交，无法再 fallback。
 - 每次切换都会在服务日志中留下记录（key 只显示前后各 4 位）。
-- 用 `flexgate status` 可以查看每个 provider 的 fallback 链和每个 key 的
-  实时用量。
+- 用 `flexgate status` 可以查看每个 provider 的 fallback 链、每条路由
+  当前使用的 key 和每个 key 的实时用量；在 `flexgate config edit` 交互
+  界面的「api keys」入口可以按路由查看各 key 的实时用量/有效性并切换
+  active key。
 - 旧版 `api_key` + `fallback_keys` 写法仍然兼容，`flexgate update` 会
-  自动迁移为 `api_keys` 列表（config_version 3 → 4）。
+  自动迁移为 `api_keys` 列表（config_version 3 → 4）；路由上的
+  `active_key` 字段在 config_version 5 引入，旧配置的每条路由默认指向
+  第一个 key。
 
 ## 环境变量
 

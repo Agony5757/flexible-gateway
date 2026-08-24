@@ -7,8 +7,6 @@ on:
       - 'docs/**'
       - 'flexgate/__init__.py'
       - '.github/workflows/docs.yml'
-    tags:
-      - 'v*'
   pull_request:
     branches: [main]
     paths:
@@ -60,7 +58,7 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     needs: build-docs
-    if: github.ref == 'refs/heads/main' || github.ref_type == 'tag'
+    if: github.ref == 'refs/heads/main'
     steps:
       - name: Deploy to GitHub Pages
         id: deployment

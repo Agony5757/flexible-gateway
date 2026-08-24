@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-CURRENT_CONFIG_VERSION = 4
+CURRENT_CONFIG_VERSION = 5
 
 # ── per-step migration rules ──────────────────────────────────────
 # Each rule takes the raw config dict at version N and returns it upgraded
@@ -80,12 +80,25 @@ def _migrate_3_to_4(data: dict) -> dict:
     return data
 
 
+def _migrate_4_to_5(data: dict) -> dict:
+    """Add the optional per-route `active_key` pointer.
+
+    Routes may now declare `active_key: N` (1-based position in the
+    provider's `api_keys`) selecting which key requests on that route start
+    from; the proxy advances the pointer on fallback. Existing configs
+    default every route to the first key, so there is nothing to rewrite —
+    this step only records the version bump.
+    """
+    return data
+
+
 # version N → rule upgrading N to N+1
 MIGRATIONS: dict[int, Callable[[dict], dict]] = {
     0: _migrate_0_to_1,
     1: _migrate_1_to_2,
     2: _migrate_2_to_3,
     3: _migrate_3_to_4,
+    4: _migrate_4_to_5,
 }
 
 

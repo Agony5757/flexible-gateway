@@ -5,8 +5,10 @@ Every provider platform exposes a different way to check remaining quota
 known adapter and queries it with the provider's own API key:
 
 * MiniMax   → GET {origin}/v1/api/openplatform/coding_plan/remains
-              (officially documented token-plan endpoint; `usage_count`
-              fields are REMAINING counts, not consumed)
+              (officially documented token-plan endpoint; reports per-quota
+              entries — we keep only the "general" text-model one, where
+              counts are usually 0/0 and usage shows up in
+              *_remaining_percent fields instead)
 * Kimi Code → GET {base}/v1/usages
               (undocumented endpoint used by Kimi Code CLI's /usage;
               returns weekly quota, 5-hour window and parallel limit)
@@ -130,20 +132,30 @@ async def _usage_minimax(
     for entry in data.get("model_remains", []):
         if not isinstance(entry, dict):
             continue
-        name = entry.get("model_name", "?")
-        # NOTE: the *_usage_count fields are REMAINING counts (upstream naming quirk).
+        # model_remains also carries non-text quotas ("video", ...); only the
+        # "general" entry describes the text/coding model quota.
+        if entry.get("model_name") != "general":
+            continue
         parts = []
+        # The text plan reports counts as 0/0; usage is only exposed via the
+        # *_remaining_percent fields, so prefer counts when present, else percent.
         total = entry.get("current_interval_total_count")
-        remain = entry.get("current_interval_usage_count")
+        used = entry.get("current_interval_usage_count")
+        pct = entry.get("current_interval_remaining_percent")
         if total:
-            parts.append(f"5h window remaining {remain}/{total} (reset {_fmt_epoch_ms(entry.get('end_time'))})")
+            parts.append(f"5h window used {used}/{total} (reset {_fmt_epoch_ms(entry.get('end_time'))})")
+        elif pct is not None:
+            parts.append(f"5h window remaining {pct}% (reset {_fmt_epoch_ms(entry.get('end_time'))})")
         w_total = entry.get("current_weekly_total_count")
-        w_remain = entry.get("current_weekly_usage_count")
+        w_used = entry.get("current_weekly_usage_count")
+        w_pct = entry.get("current_weekly_remaining_percent")
         if w_total:
-            parts.append(f"weekly remaining {w_remain}/{w_total} (reset {_fmt_epoch_ms(entry.get('weekly_end_time'))})")
+            parts.append(f"weekly used {w_used}/{w_total} (reset {_fmt_epoch_ms(entry.get('weekly_end_time'))})")
+        elif w_pct is not None:
+            parts.append(f"weekly remaining {w_pct}% (reset {_fmt_epoch_ms(entry.get('weekly_end_time'))})")
         if parts:
-            lines.append(f"{name}: " + "; ".join(parts))
-    return lines or ["plan active (no per-model quota data)"], None
+            lines.append("; ".join(parts))
+    return lines or ["plan active (no text-model quota data)"], None
 
 
 async def _usage_zai(
