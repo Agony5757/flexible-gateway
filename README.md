@@ -89,7 +89,7 @@ flexgate service uninstall           # 停止、禁用并删除 unit
 - 若升级时检测到旧版后台 gateway 仍在运行，会先准备好 systemd unit，但不会强杀正在服务的进程；按提示手动 `kill <PID>` 停掉旧进程，再执行 `flexgate service start` 完成切换。
 - unit 设置了启动速率限制，永久配置错误不会再无限快速重启。
 - `service reload` 和 `config set/edit` 会在仅路由变化时发送 SIGUSR1；如果 endpoint 变化，则先检查再 restart。若只改 host、仍复用当前 port，为避免误停服务会要求先执行 `service stop`，再执行 `service start`。
-- 查看日志：`journalctl --user -u flexgate -e`。
+- 查看日志：`flexgate log`（`-f` 跟随、`--since`/`--grep` 过滤、`-r` 只看路由决策行）。
 
 ### 版本与升级
 
@@ -261,7 +261,7 @@ flexgate settings apply          # 将 config.yaml 配置写入 ~/.claude/settin
 | `~/.flexgate/service-state.json` | 最近一次成功启动所应用的 config 路径与 endpoint |
 | `~/.flexgate/update-check.json` | PyPI 新版本检查的缓存（24h 有效期） |
 | `~/.config/systemd/user/flexgate.service` | 唯一的持久化服务 unit |
-| systemd journal | 服务日志（`journalctl --user -u flexgate`） |
+| systemd journal | 服务日志（`flexgate log`，即 `journalctl --user -u flexgate`） |
 
 旧版本的 `~/.flexgate/flexgate.pid`、`flexgate.guardian.pid` 和
 `flexgate.log` 不再属于当前运行架构；service 启动时会安全清理 PID 残留，

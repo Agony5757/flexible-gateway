@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -76,6 +77,10 @@ def _systemctl(*args: str, capture: bool = False) -> subprocess.CompletedProcess
         text=True,
         capture_output=capture,
     )
+
+
+def _journalctl(*extra: str) -> list[str]:
+    return ["journalctl", "--user", "--unit", SERVICE_NAME, "--no-pager", "--output", "cat", *extra]
 
 
 def _systemd_user_available() -> tuple[bool, str]:
@@ -827,7 +832,7 @@ def _print_start_failure(result: subprocess.CompletedProcess | None = None) -> N
     details = (status.stdout or status.stderr or "").strip()
     if details:
         print(details)
-    print("Inspect logs with: journalctl --user -u flexgate -e")
+    print("Inspect logs with: flexgate log")
 
 
 def _start_service(config_path: str, *, restart: bool) -> None:
@@ -1179,6 +1184,73 @@ def service_status() -> str | None:
     return config_path
 
 
+# Completion lines logged by server.py after each request:
+#   [schedule] model -> provider (model) | status | ms
+_ROUTE_LINE = re.compile(r"\[[^\]]+\] \S+ -> \S+ \([^)]+\) \| \d+ \| \d+ms$")
+
+
+def service_log(
+    lines: int | None = None,
+    since: str | None = None,
+    follow: bool = False,
+    grep: str | None = None,
+    routes: bool = False,
+) -> None:
+    if shutil.which("journalctl") is None:
+        print("journalctl not found — this feature requires systemd (Linux).")
+        print("Foreground servers ('flexgate run') log directly to the terminal.")
+        sys.exit(1)
+    available, reason = _systemd_user_available()
+    if not available:
+        print(reason)
+        print("\n'flexgate log' reads the systemd user journal of flexgate.service.")
+        print("Foreground servers ('flexgate run') log directly to the terminal.")
+        sys.exit(1)
+
+    probe = subprocess.run(_journalctl("--lines", "1"), capture_output=True, text=True)
+    if probe.returncode != 0:
+        print((probe.stderr or "").strip() or f"journalctl exited with code {probe.returncode}.")
+        sys.exit(1)
+    if not (probe.stdout or "").strip():
+        print(f"No journal entries for {SERVICE_NAME}.")
+        if not service_installed() and not _service_active():
+            print("Install and start the service with: flexgate service install")
+        elif not _service_active():
+            print("The service is installed but not running. Start it with: flexgate service start")
+        else:
+            print("The service is running but has not logged anything yet.")
+        sys.exit(1)
+
+    count = lines if lines is not None else (None if since else 50)
+    cmd = _journalctl()
+    if count is not None:
+        cmd += ["--lines", str(count)]
+    if since:
+        cmd += ["--since", since]
+    if follow:
+        cmd += ["--follow"]
+
+    needle = grep.lower() if grep else None
+
+    def emit(line: str) -> None:
+        if routes and not _ROUTE_LINE.search(line):
+            return
+        if needle and needle not in line.lower():
+            return
+        print(line, flush=True)
+
+    try:
+        if routes or grep or follow:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+            for raw in proc.stdout or []:
+                emit(raw.rstrip("\n"))
+            proc.wait()
+        else:
+            sys.exit(subprocess.run(cmd).returncode)
+    except KeyboardInterrupt:
+        sys.exit(0)
+
+
 def service_help() -> None:
     print(
         """flexgate service — primary persistent Flexgate runtime (Linux/systemd)
@@ -1198,7 +1270,7 @@ Details:
   • Persistent serving is owned exclusively by ~/.config/systemd/user/flexgate.service.
   • 'install' enables login linger so the service can run without an active login.
   • Routing-only changes reload with SIGUSR1; host/port changes use restart.
-  • Logs: journalctl --user -u flexgate -e
+  • Logs: flexgate log  (journalctl --user -u flexgate)
   • 'flexgate run' starts a foreground server for debugging only; it is not
     a persistent serving mode.
 """
