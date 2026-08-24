@@ -84,7 +84,7 @@ flexgate log -f -r               # 实时观察每个请求被路由到哪个 pr
 
 ## 上游连通性预检
 
-`flexgate check` 会向每个**被路由引用的 `(provider, model)` 组合**发送一次
+`flexgate doctor` 会向每个**被路由引用的 `(provider, model)` 组合**发送一次
 `POST /v1/messages`（`max_tokens=1`，消耗约 1~2 token），用于主动检查：
 
 - DNS / TCP / TLS 不可达（`base_url` 写错、网络不通）
@@ -92,15 +92,17 @@ flexgate log -f -r               # 实时观察每个请求被路由到哪个 pr
 - 仍是默认占位符（如 `your-zai-api-key`）
 - Provider 侧 5xx 故障
 
-可通过 `--verify-timeout N` 调整每个 provider 的超时时间（默认 15 秒）。
+可通过 `--verify-timeout N` 调整每个 provider 的探测超时（默认 15 秒）；
+`--offline` 跳过全部网络检查（PyPI 新版检查 + 上游探测）。旧的
+`flexgate check` 命令已弃用：仍可运行，但会打印提示并委托给 `doctor`
+（注意 doctor 还检查本地安装，退出码语义更宽）。
 
 ## 前台调试
 
-`run` / `check` 是独立的顶层调试命令，不属于持久化服务模式：
+`run` 是独立的顶层调试命令，不属于持久化服务模式：
 
 ```bash
 flexgate run                       # 单个前台进程，仅用于开发/调试
-flexgate check                     # 上游 provider 连通性检测
 ```
 
 非 systemd 环境只能使用 `flexgate run` 前台运行。`--port PORT` 也只对
@@ -180,22 +182,26 @@ Flexgate config  —  ~/.flexgate/config.yaml
 ## Settings 管理
 
 ```bash
-flexgate settings import         # 从 ~/.claude/settings.json* 导入凭证到 config.yaml
-flexgate settings apply          # 将 config.yaml 配置写入 ~/.claude/settings.json
+flexgate settings import           # 从 ~/.claude/settings.json* 导入凭证到 config.yaml（多 key 追加）
+flexgate settings apply            # 将网关 env 写入 ~/.claude/settings.json（非破坏性）
+flexgate settings apply --dry-run  # 预览将要修改的 env 键，不写文件
 ```
 
 **import** 会扫描 `~/.claude/settings.json*`，从每个文件中提取
-`ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN`，自动写入 config.yaml 的
-providers 部分。文件名与 provider 名称的映射规则：
+`ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN`，合并进 config.yaml 的
+providers：provider 已存在时**追加**到它的 `api_keys` 列表（已存在同一把
+key 则跳过），不存在则新建。文件名与 provider 名称的映射规则：
 
 - `settings.json` → 根据域名自动推断（如含 `z.ai` → `zai`）
 - `settings.json.zai` → provider 名 `zai`
 - `settings.json.bak.*` → 跳过（备份文件）
 
-**apply** 会读取 config.yaml 中的 `server` 和 `claude_settings`，备份当前
-`~/.claude/settings.json` 为 `settings.json.bak.{timestamp}`，然后生成新的
-settings.json，将 `ANTHROPIC_BASE_URL` 指向本地网关，并保留原有的
-`permissions` 等非 env 字段：
+**apply** 是非破坏性的：备份当前 `~/.claude/settings.json` 为
+`settings.json.bak.{timestamp}` 后，**只重写 flexgate 托管的 6 个 env 键**
+（`ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`、`API_TIMEOUT_MS`、三个
+`ANTHROPIC_DEFAULT_*_MODEL`），settings.json 中的其余字段（hooks、
+permissions、自定义 env 等）全部原样保留。token 策略与 `service install`
+共用一条路径：显式参数 → 文件里已有的 token → 兜底 `"gateway"`：
 
 ```json
 {
@@ -234,8 +240,8 @@ flexgate sync --dry-run    # 只预览，不写配置
 
 ```bash
 flexgate --version               # 打印版本号
-flexgate doctor                  # 只读体检：Python、PyPI 新版、配置 schema、端口、systemd、Claude settings
-flexgate doctor --offline        # 跳过 PyPI 检查
+flexgate doctor                  # 只读体检：Python、PyPI 新版、配置 schema、端口、systemd、Claude settings、上游连通性
+flexgate doctor --offline        # 跳过全部网络检查（PyPI 新版检查 + 上游探测）
 flexgate update                  # 一键升级：pip/pipx/uv 升级包 + 迁移配置 schema + 热重载服务
 flexgate update --check          # 只报告将要做什么，不改动
 flexgate update --config-only    # 只迁移配置，不升级包

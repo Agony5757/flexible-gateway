@@ -4,17 +4,19 @@
 
 | 文件 | 作用 |
 |------|------|
-| `flexgate/cli.py` | argparse CLI；service 生命周期命令、前台 `run`/`check`、config/settings/sync 命令 |
-| `flexgate/config.py` | dataclass 配置模型（`GatewayConfig`、`ProviderConfig`、`RouteConfig` 等），YAML 加载/保存 |
-| `flexgate/router.py` | `resolve(config, model)` — 先定时路由后默认路由，首个正则命中生效 |
-| `flexgate/proxy.py` | `handle_request()` — httpx 异步代理，per-key fallback 重试，SSE 流式 + JSON 透传 |
+| `flexgate/cli.py` | argparse CLI；service 生命周期命令、前台 `run`、config/settings/sync 命令、`flexgate log` 日志查看 |
+| `flexgate/ui.py` | 共享终端样式：ANSI 辅助函数、`ok`/`warn`/`fail`/`err` 输出辅助、`FlexgateHelpFormatter`（各版本一致的彩色 help；统一受 `NO_COLOR` + isatty 门控） |
+| `flexgate/config.py` | dataclass 配置模型（`GatewayConfig`、`ProviderConfig`、`RouteConfig` 等），YAML 加载/保存，`is_placeholder_key` |
+| `flexgate/router.py` | `resolve(config, model)` — 先定时路由后默认路由，首个正则命中生效；匹配前归一化模型别名（`sonnet`/`claude-3-7-sonnet-latest` → `^claude-<tier>`） |
+| `flexgate/proxy.py` | `handle_request()` — httpx 异步代理，per-key fallback 重试，SSE 流式 + JSON 透传；记录每个请求由哪把 key 服务 |
 | `flexgate/usage.py` | `flexgate status` / `flexgate usage` 的用量查询 — 各平台适配器 + minimal chat probe 兜底 |
 | `flexgate/server.py` | Starlette 应用，`POST /v1/messages` 端点，SIGUSR1 热重载 |
-| `flexgate/service.py` | systemd 用户服务的安装/启停/重载/状态（持久化运行的唯一入口） |
-| `flexgate/settings.py` | config.yaml ↔ `~/.claude/settings.json` 双向桥接 |
+| `flexgate/service.py` | systemd 用户服务的安装/启停/重载/状态（持久化运行的唯一入口）；journal 日志查看 |
+| `flexgate/healthcheck.py` | 上游连通性探测（`POST /v1/messages`，`max_tokens=1`），由 `doctor` 调用（`flexgate check` 为弃用别名） |
+| `flexgate/settings.py` | config.yaml ↔ `~/.claude/settings.json` 双向桥接（apply 非破坏性：只改托管 env 键） |
 | `flexgate/sync.py` | `flexgate sync` — 通过 confsync 服务器加密同步整份配置 |
 | `flexgate/migrate.py` | 配置 schema 版本化：逐级迁移链 + 备份 + 原子重写 |
-| `flexgate/doctor.py` | `flexgate doctor` — 只读诊断 |
+| `flexgate/doctor.py` | `flexgate doctor` — 只读诊断 + 上游连通性（`--offline` 跳过网络检查） |
 | `flexgate/update.py` | `flexgate update` — PyPI 版本检查、按安装方式升级、配置迁移、服务重载 |
 
 ## 关键设计
