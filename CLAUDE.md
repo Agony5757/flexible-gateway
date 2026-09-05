@@ -73,10 +73,13 @@ without a systemd user instance.
 
 ```
 Claude Code → POST /v1/messages (model="claude-sonnet-4-6")
-  → server.py   (Starlette app, single route)
+  → server.py   (Starlette app, /v1/messages + /v1/images/* routes)
   → router.py   (resolve(): regex match model, check schedule windows first, then default routes)
   → proxy.py    (rewrite model field if override, swap x-api-key, SSE streaming pass-through)
   → Upstream provider (z.ai, minimax, xiaomi, etc.)
+
+OpenAI-style client → POST /v1/images/generations
+  → images.py   (translate to MiniMax /v1/image_generation; provider auto-detected by base_url)
 ```
 
 ### Source files (`flexgate/`)
@@ -89,7 +92,9 @@ Claude Code → POST /v1/messages (model="claude-sonnet-4-6")
 | `router.py` | `resolve(config, model)` — schedule-first then default routes, first regex match wins; model aliases normalized before matching |
 | `proxy.py` | `handle_request()` — httpx async proxy, per-key fallback retry loop, SSE streaming + JSON pass-through |
 | `usage.py` | `flexgate status` usage queries — per-platform adapters (MiniMax coding_plan API, Kimi Code usages API, z.ai quota API, LiteLLM `/key/info`) plus a minimal chat probe fallback |
-| `server.py` | Starlette app creation, `POST /v1/messages` endpoint, `SIGUSR1` lifespan reload |
+| `server.py` | Starlette app creation, `POST /v1/messages` + `POST /v1/images/{generations,edits}` endpoints, `SIGUSR1` lifespan reload |
+| `images.py` | OpenAI Images API → MiniMax `/v1/image_generation` translation (`image-01`, size→width/height clamped to 512–2048 mult of 8, `data.image_base64[]`→`data[].b64_json`); edits endpoint returns 501; unknown image model names get 501 `model_not_supported` |
+| `fallback.py` | Catch-all route: merged Anthropic/OpenAI-shaped JSON errors for every unserved path — 404 `route_not_found` (lists valid routes), 405 `method_not_allowed`, 501 `endpoint_not_supported` per recognized API family with an actionable reason |
 | `main.py` | Thin bootstrap: load config → create app → run uvicorn |
 | `service.py` | Authoritative systemd user-service install/start/stop/restart/reload/status and legacy PID migration |
 | `healthcheck.py` | Upstream connectivity probing (`POST /v1/messages`, max_tokens=1) for each referenced (provider, model) pair; called by `doctor` (`flexgate check` is a deprecated alias of doctor) |

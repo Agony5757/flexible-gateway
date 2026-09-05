@@ -13,6 +13,8 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from flexgate.config import GatewayConfig, load_config
+from flexgate.fallback import fallback
+from flexgate.images import images_edits, images_generate
 from flexgate.proxy import handle_request
 from flexgate.router import NoRouteMatchError, resolve
 
@@ -65,7 +67,17 @@ def create_app(config: GatewayConfig, config_path: str | None = None) -> Starlet
         timeout=httpx.Timeout(connect=10, read=3600, write=10, pool=10),
     )
 
-    routes = [Route("/v1/messages", messages, methods=["POST"])]
+    routes = [
+        Route("/v1/messages", messages, methods=["POST"]),
+        Route("/v1/images/generations", images_generate, methods=["POST"]),
+        Route("/v1/images/edits", images_edits, methods=["POST"]),
+        # Catch-all last: structured, reasoned errors for anything unsupported.
+        Route(
+            "/{path:path}",
+            fallback,
+            methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+        ),
+    ]
 
     async def lifespan(app: Starlette) -> AsyncGenerator[None, None]:
         app.state.config = config
