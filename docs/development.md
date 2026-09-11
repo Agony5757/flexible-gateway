@@ -9,8 +9,11 @@
 | `flexgate/config.py` | dataclass 配置模型（`GatewayConfig`、`ProviderConfig`、`RouteConfig` 等），YAML 加载/保存，`is_placeholder_key` |
 | `flexgate/router.py` | `resolve(config, model)` — 先定时路由后默认路由，首个正则命中生效；匹配前归一化模型别名（`sonnet`/`claude-3-7-sonnet-latest` → `^claude-<tier>`） |
 | `flexgate/proxy.py` | `handle_request()` — httpx 异步代理，per-key fallback 重试，SSE 流式 + JSON 透传；记录每个请求由哪把 key 服务 |
-| `flexgate/usage.py` | `flexgate status` / `flexgate usage` 的用量查询 — 各平台适配器 + minimal chat probe 兜底 |
-| `flexgate/server.py` | Starlette 应用，`POST /v1/messages` 端点，SIGUSR1 热重载 |
+| `flexgate/usage.py` | `flexgate status` / `flexgate usage` 的用量查询 — 各平台适配器 + minimal chat probe 兜底 + 查询失败缓存（`usage --force` 强制重查） |
+| `flexgate/server.py` | Starlette 应用，`POST /v1/messages` + `POST /v1/images/{generations,edits}` 端点，SIGUSR1 热重载 |
+| `flexgate/images.py` | OpenAI Images API → MiniMax `/v1/image_generation` 翻译（模型名映射、size 钳制、`b64_json` 透传；edits 返回 501） |
+| `flexgate/fallback.py` | 兜底路由：所有未服务路径返回 Anthropic/OpenAI 双兼容的结构化 JSON 错误（404 `route_not_found` / 405 / 501 `endpoint_not_supported`） |
+| `flexgate/main.py` | 启动引导：加载配置 → 创建 app → 跑 uvicorn |
 | `flexgate/service.py` | systemd 用户服务的安装/启停/重载/状态（持久化运行的唯一入口）；journal 日志查看 |
 | `flexgate/healthcheck.py` | 上游连通性探测（`POST /v1/messages`，`max_tokens=1`），由 `doctor` 调用（`flexgate check` 为弃用别名） |
 | `flexgate/settings.py` | config.yaml ↔ `~/.claude/settings.json` 双向桥接（apply 非破坏性：只改托管 env 键） |

@@ -19,6 +19,7 @@ systemd **用户服务**是 Linux 上唯一推荐的持久化运行方式，负�
 ```bash
 flexgate service install             # 安装、启用并立即启动
 flexgate service install --no-start  # 仅安装并启用，不立即启动
+flexgate service install --no-claude-settings  # 跳过修改 ~/.claude/settings.json 的交互询问
 flexgate service start               # 启动；自动修复旧格式或失效的 unit
 flexgate service stop                # 停止
 flexgate service restart             # 重启
@@ -55,9 +56,13 @@ flexgate status --no-usage       # 跳过用量查询，只看配置
 flexgate status --usage-timeout 30
 flexgate usage                   # 只看每个 key 的用量/额度（不打印配置和路由）
 flexgate usage --usage-timeout 30
+flexgate usage --force           # 重查上次失败的 key（默认跳过，读缓存）
 ```
 
-各平台的用量查询适配器详见[用量查询](usage.md)。
+查询失败的 key 会被缓存并在此后的 `status` / `usage` 中默认跳过
+（显示为 `cached failure` 并附带提示），`--force` 强制重新查询；
+详见[用量查询](usage.md)。各平台的用量查询适配器同样见
+[用量查询](usage.md)。
 
 ## 查看日志（log）
 

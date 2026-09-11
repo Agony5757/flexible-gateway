@@ -23,12 +23,17 @@ Claude Code → localhost:8765 → opus  → z.ai (glm-5.1)
 
 ## 特性一览
 
-- **按 model 路由**：正则匹配请求中的 model 字段，首个命中生效，支持兜底路由
+- **按 model 路由**：正则匹配请求中的 model 字段，首个命中生效，支持兜底路由；
+  裸别名（`sonnet`/`opus`/`haiku`）与旧编号名自动归一化
 - **定时路由**：按时间窗口自动切换路由（支持跨夜，如 22:00-06:00）
 - **多 key fallback**：同一上游配置多个 key，遇到 401/402/403/429/5xx/529
   或连接错误时自动切换到下一个 key
+- **多模态降级**：非多模态模型的请求自动剥离图片块并注入说明，避免上游 4xx
+- **OpenAI 兼容图像生成**：`POST /v1/images/generations` 自动转 MiniMax
+  `image-01`，详见 [HTTP API](api.md)
 - **用量查询**：`flexgate status` / `flexgate usage` 按平台适配器查询每个
-  key 的实时额度（MiniMax、Kimi Code、z.ai、LiteLLM 等）
+  key 的实时额度（MiniMax、Kimi Code、z.ai、LiteLLM 等）；查询失败的 key
+  自动缓存跳过，`usage --force` 强制重查
 - **Claude Code settings 管理**：import / apply 双向同步
 - **配置同步**：`flexgate sync` 通过 confsync 服务器加密同步配置
 - **自愈升级**：`flexgate doctor` 体检、`flexgate update` 一键升级并迁移配置
@@ -40,6 +45,7 @@ Claude Code → localhost:8765 → opus  → z.ai (glm-5.1)
 
 quickstart
 configuration
+api
 cli
 usage
 development

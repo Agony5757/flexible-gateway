@@ -7,6 +7,7 @@
 | `~/.flexgate/config.yaml` | 主配置文件 |
 | `~/.flexgate/service-state.json` | 最近一次成功启动所应用的 config 路径与 endpoint |
 | `~/.flexgate/update-check.json` | PyPI 新版本检查的缓存（24h 有效期） |
+| `~/.flexgate/usage-cache.json` | 用量查询失败缓存（key 指纹 + 错误文本；`usage --force` 重查后更新，见[用量查询](usage.md)） |
 | `~/.config/systemd/user/flexgate.service` | 唯一的持久化服务 unit |
 | systemd journal | 服务日志（`flexgate log`，即 `journalctl --user -u flexgate`） |
 

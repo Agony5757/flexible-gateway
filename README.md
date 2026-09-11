@@ -72,6 +72,7 @@ systemd **用户服务**是 Linux 上唯一推荐的持久化运行方式，负�
 ```bash
 flexgate service install             # 安装、启用并立即启动
 flexgate service install --no-start  # 仅安装并启用，不立即启动
+flexgate service install --no-claude-settings  # 跳过修改 ~/.claude/settings.json 的交互询问
 flexgate service start               # 启动；自动修复旧格式或失效的 unit
 flexgate service stop                # 停止
 flexgate service restart             # 重启
@@ -96,7 +97,7 @@ flexgate service uninstall           # 停止、禁用并删除 unit
 ```bash
 flexgate --version               # 打印版本号（service status / 裸 flexgate 也会显示）
 flexgate doctor                  # 只读体检：Python、PyPI 新版、配置 schema、端口、systemd、Claude settings、上游连通性
-flexgate doctor --offline        # 跳过 PyPI 检查
+flexgate doctor --offline        # 跳过全部网络检查（PyPI 新版检查 + 上游探测）
 flexgate update                  # 一键升级：pip/pipx/uv 升级包 + 迁移配置 schema + 热重载服务
 flexgate update --check          # 只报告将要做什么，不改动
 flexgate update --config-only    # 只迁移配置，不升级包
@@ -153,6 +154,7 @@ flexgate status --no-usage       # 跳过用量查询，只看配置
 flexgate status --usage-timeout 30
 flexgate usage                   # 只看每个 key 的用量/额度（不打印配置和路由）
 flexgate usage --usage-timeout 30
+flexgate usage --force           # 重查上次失败的 key（默认跳过，读缓存）
 ```
 
 `flexgate status` 展示当前配置中的所有 provider、每个 provider 的 key 及
@@ -172,6 +174,24 @@ fallback 链、当前生效的路由，并逐一查询**每个 key** 的用量/�
 
 如果某平台的专用接口调用失败，flexgate 会自动退化为 minimal probe 再试一次。
 用量查询接口多为平台内部接口，可能随时变动；查询结果仅供参考。
+
+**查询失败缓存**：用量查询中报错的 key（彻底失败，或专用接口报错但 probe
+证明 key 仍可用，例如智谱的按量付费 key）会记入
+`~/.flexgate/usage-cache.json`（只存 key 指纹，不存明文），此后 `status` /
+`usage` 默认跳过这些 key 并显示缓存错误与提示（`cached failure`）；
+`flexgate usage --force` 强制重查并更新缓存，干净成功后自动恢复实时查询。
+
+### HTTP API（图像生成与结构化错误）
+
+除 `POST /v1/messages` 外，网关还提供 OpenAI 兼容的图像生成端点
+`POST /v1/images/generations`：自动发现配置中的 MiniMax provider，把请求
+翻译为 MiniMax `image-01` 文生图（模型名提示如 `gpt-image`/`dall-e` 均可，
+`size` 钳制到 512–2048 的 8 倍数，响应为 `data[].b64_json`）。
+`/v1/images/edits` 固定返回 501（上游仅支持文生图）。
+
+所有未支持的路径（如 `/v1/chat/completions`、`/v1/embeddings`、`count_tokens`）
+返回 Anthropic/OpenAI 双兼容的结构化 JSON 错误（404/405/501），而不是裸
+404。详见[HTTP API 文档](https://agony5757.github.io/flexible-gateway/api.html)。
 
 ### 前台调试
 
@@ -227,16 +247,19 @@ flexgate config set haiku MiniMax-M3
 
 ```text
 Flexgate config  —  ~/.flexgate/config.yaml
-↑/↓ move · Enter edit tier · s save · q quit
+↑/↓ move · Enter edit · s save · q quit
 
 ▶ opus      ustc / deepseek-v4-pro
   sonnet    ustc / deepseek-v4-pro
   haiku     ustc / deepseek-v4-pro
+  fallback  ustc / deepseek-v4-pro
+  api keys  select the active key per route
 
 ○ no unsaved changes
 ```
 
-- 方向键选中某个 tier（opus/sonnet/haiku），回车进入：先从候选 **provider** 列表选择，再从该 provider 的候选 **model** 列表选择。
+- 方向键选中某个 tier（opus/sonnet/haiku）或 `fallback`（兜底路由 `.*`，未命中任何 tier 的请求走它），回车进入：先从候选 **provider** 列表选择，再从该 provider 的候选 **model** 列表选择。
+- 选中 `api keys` 回车进入：先选一条**路由**，再选它的 **active key**；key 列表会实时查询每个 key 的用量/有效性（与 `flexgate status` 相同），并标注当前 active 的 key。
 - model 列表包含：`available_models` 中的各个模型、「使用 provider 默认（首个可用模型，不写死 model）」、以及「自定义模型…」（手动输入）。
 - 按 `s` 保存（并向运行中的网关发送 SIGUSR1 热重载，**无需重启即生效**），按 `q` 退出（有未保存改动时会询问 "Config changed — activate now?"：选 Yes 立即保存并热重载生效，选 No 放弃改动）；子菜单中按 `Esc`/`←` 返回上一级。
 - 需要交互式终端（TTY）；非交互场景请改用 `flexgate config set`。
@@ -269,6 +292,7 @@ API_TIMEOUT_MS、三个 `ANTHROPIC_DEFAULT_*_MODEL`），settings.json 中的
 | `~/.flexgate/config.yaml` | 主配置文件 |
 | `~/.flexgate/service-state.json` | 最近一次成功启动所应用的 config 路径与 endpoint |
 | `~/.flexgate/update-check.json` | PyPI 新版本检查的缓存（24h 有效期） |
+| `~/.flexgate/usage-cache.json` | 用量查询失败缓存（key 指纹 + 错误文本；`usage --force` 重查后更新） |
 | `~/.config/systemd/user/flexgate.service` | 唯一的持久化服务 unit |
 | systemd journal | 服务日志（`flexgate log`，即 `journalctl --user -u flexgate`） |
 
@@ -320,6 +344,7 @@ routes:                          # 从上到下匹配，首个命中生效
   - pattern: "^claude-sonnet"
     provider: minimax
     model: "MiniMax-M3"
+    active_key: 2               # 可选：该路由从 minimax 的第 2 个 key 开始用（1 起始，默认 1）
   - pattern: "^claude-haiku"
     provider: minimax
     model: "MiniMax-M3"
@@ -337,9 +362,10 @@ routes:                          # 从上到下匹配，首个命中生效
 | `providers.<name>.api_keys` | API key 列表（一个或多个，互为 fallback）；每项为 key 字符串或 `{key, note}`，`note` 是存在配置里的备注 |
 | `providers.<name>.available_models` | 该 provider 的可用模型列表，首个条目作为路由省略 `model` 时的回退模型 |
 | `claude_settings.*` | 写入 settings.json 的模型和超时配置 |
-| `routes[].pattern` | 正则匹配请求中的 model 字段 |
+| `routes[].pattern` | 正则匹配请求中的 model 字段（匹配前归一化裸别名 `sonnet`/`opus`/`haiku`/`default` 与旧编号名） |
 | `routes[].provider` | 路由到的 provider 名称 |
 | `routes[].model` | 可选，替换发给 provider 的模型名 |
+| `routes[].active_key` | 可选，1 起始的 provider api_keys 序号，该路由的请求从哪个 key 开始（默认 1，即第一个 key） |
 | `schedule[].name` | 定时规则名称 |
 | `schedule[].start/end` | 时间窗口（HH:MM 格式，支持跨夜如 22:00-06:00） |
 | `schedule[].routes` | 该时间窗口内生效的路由（格式同 `routes`） |
@@ -351,7 +377,13 @@ routes:                          # 从上到下匹配，首个命中生效
 `{key, note}` 加一个存在配置里的备注（`flexgate status` 和 fallback 日志
 都会显示 note，方便分辨是哪个账号的 key）：
 
-- 请求先走第一个 key；失败时按列表顺序自动重试后续 key，直到某个 key
+- 每条路由有一个「当前 key」指针（路由上的 `active_key`，默认指向
+  provider 的第一个 key）：该路由的请求从指针指向的 key 开始；key 失败
+  时自动换用下一个 key（循环一圈），指针也随之自动前进——后续请求直接
+  从能用的 key 开始。**所有 key 轮换一圈都失败时，请求返回最后一次的
+  错误**。指针的运行时前进只存在于网关进程内存中，不写回配置文件；
+  可通过 `flexgate config edit` → "api keys" 交互切换。
+- 请求先走 active key；失败时按列表顺序自动重试后续 key，直到某个 key
   成功或返回不可重试的错误。
 - 触发切换的条件：HTTP **401 / 402 / 403 / 429 / 500 / 502 / 503 / 529**
   （key 失效、余额/额度耗尽、限流、平台过载）以及连接错误、超时。
