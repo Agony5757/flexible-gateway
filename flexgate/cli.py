@@ -213,6 +213,10 @@ def _set_route(
     """Update the default route for a pattern, or insert one before the catch-all."""
     for route in config.routes:
         if route.pattern.pattern == pattern:
+            if route.provider_name != provider_name:
+                # Stale active-key pointer from the old provider may point past
+                # the new provider's key list and make the config unloadable.
+                route.key_index = 0
             route.provider_name = provider_name
             route.model = model_override
             return
