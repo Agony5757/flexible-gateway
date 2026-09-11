@@ -23,7 +23,10 @@ known adapter and queries it with the provider's own API key:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -31,13 +34,24 @@ from urllib.parse import urlparse
 
 import httpx
 
-from flexgate.config import ApiKey, GatewayConfig, ProviderConfig, is_placeholder_key
+from flexgate.config import (
+    FLEXGATE_HOME,
+    ApiKey,
+    GatewayConfig,
+    ProviderConfig,
+    is_placeholder_key,
+)
 
 logger = logging.getLogger("flexgate.usage")
 
 # Minimal probe spec: input "hi", cap output at 128 tokens.
 _PROBE_INPUT = "hi"
 _PROBE_MAX_TOKENS = 128
+
+# Keys whose usage check hard-failed are cached here and skipped by default
+# until 'flexgate usage --force' rechecks them.
+USAGE_CACHE_FILE = os.path.join(FLEXGATE_HOME, "usage-cache.json")
+FORCE_HINT = "recheck with: flexgate usage --force"
 
 
 @dataclass
@@ -47,12 +61,57 @@ class UsageResult:
     method: str  # how the information was obtained
     ok: bool
     lines: list[str] = field(default_factory=list)
+    skipped: bool = False  # served from the failure cache, not queried now
+    adapter_error: str | None = None  # adapter failed but the probe recovered
 
 
 def _mask_key(key: str) -> str:
     if len(key) <= 8:
         return "***"
     return key[:4] + "***" + key[-4:]
+
+
+# ── failure cache ────────────────────────────────────────────────────
+
+
+def _fingerprint(key: str) -> str:
+    """Stable identity for a key — the cache never stores key material."""
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def _load_fail_cache() -> dict[str, dict]:
+    try:
+        with open(USAGE_CACHE_FILE) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    entries = data.get("entries") if isinstance(data, dict) else None
+    return dict(entries) if isinstance(entries, dict) else {}
+
+
+def _save_fail_cache(entries: dict[str, dict]) -> None:
+    tmp = USAGE_CACHE_FILE + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump({"entries": entries}, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, USAGE_CACHE_FILE)
+    except OSError:
+        logger.debug("could not write usage cache", exc_info=True)
+
+
+def _fmt_age(iso: str) -> str:
+    try:
+        then = datetime.fromisoformat(iso)
+    except (ValueError, TypeError):
+        return "?"
+    secs = max(0, (datetime.now() - then).total_seconds())
+    if secs < 60:
+        return f"{secs:.0f}s"
+    if secs < 3600:
+        return f"{secs / 60:.0f}m"
+    if secs < 86400:
+        return f"{secs / 3600:.0f}h"
+    return f"{secs / 86400:.0f}d"
 
 
 def _origin(base_url: str) -> str:
@@ -342,7 +401,10 @@ async def check_key_usage(
         probe_lines, probe_err = await _probe_chat(client, provider, key, timeout)
         note = f"{method} failed ({err}); probe: "
         if probe_err is None:
-            return UsageResult(provider.name, label, method, True, [note + probe_lines[0]])
+            return UsageResult(
+                provider.name, label, method, True, [note + probe_lines[0]],
+                adapter_error=err,
+            )
         return UsageResult(provider.name, label, method, False, [note + probe_err])
 
     lines, err = await _probe_chat(client, provider, key, timeout)
@@ -352,24 +414,82 @@ async def check_key_usage(
     return UsageResult(provider.name, label, method, False, [err])
 
 
+async def _check_key_cached(
+    client: httpx.AsyncClient,
+    provider: ProviderConfig,
+    entry: ApiKey,
+    index: int,
+    timeout: float,
+    view: dict[str, dict],
+    cache: dict[str, dict],
+) -> tuple[UsageResult, bool]:
+    """check_key_usage plus failure-cache bookkeeping.
+
+    `view` holds the failed checks to skip on this run (empty when forced);
+    `cache` is the live copy that gets written back. Any result carrying an
+    error (hard failure, or adapter error recovered by the probe) is cached
+    and skipped next time. Returns (result, cache_changed).
+    """
+    key = entry.key
+    fp = _fingerprint(key)
+    hit = view.get(fp)
+    if hit is not None:
+        label = f"key #{index + 1} ({_mask_key(key)})"
+        if entry.note:
+            label += f" [{entry.note}]"
+        ok = bool(hit.get("ok"))
+        lines = list(hit.get("lines") or [hit.get("error") or "unknown error"])
+        age = _fmt_age(hit.get("failed_at", ""))
+        method = f"cached ({age} ago)" if ok else f"cached failure ({age} ago)"
+        return UsageResult(provider.name, label, method, ok, lines + [FORCE_HINT], skipped=True), False
+    result = await check_key_usage(client, provider, entry, index, timeout)
+    if is_placeholder_key(key):
+        return result, False  # local config state, not a remote failure
+    if result.ok and result.adapter_error is None:
+        if fp in cache:
+            del cache[fp]
+            return result, True
+        return result, False
+    cache[fp] = {
+        "provider": provider.name,
+        "ok": result.ok,
+        "lines": [line[:400] for line in result.lines][:4],
+        "method": result.method,
+        "failed_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    return result, True
+
+
 async def check_all_usage(
-    config: GatewayConfig, timeout: float = 15.0
+    config: GatewayConfig, timeout: float = 15.0, force: bool = False
 ) -> dict[str, list[UsageResult]]:
-    """Query usage for every key of every provider, concurrently."""
+    """Query usage for every key of every provider, concurrently.
+
+    Keys whose previous check hard-failed are served from the failure cache
+    (marked `skipped`) unless `force` is set; the cache is updated afterwards.
+    """
     results: dict[str, list[UsageResult]] = {}
+    cache = _load_fail_cache()
+    view: dict[str, dict] = {} if force else cache
     async with httpx.AsyncClient() as client:
         tasks = []
         refs: list[tuple[str, int]] = []
         for name, provider in config.providers.items():
             results[name] = [None] * len(provider.api_keys)  # type: ignore[list-item]
             for index, entry in enumerate(provider.api_keys):
-                tasks.append(check_key_usage(client, provider, entry, index, timeout))
+                tasks.append(_check_key_cached(client, provider, entry, index, timeout, view, cache))
                 refs.append((name, index))
         done = await asyncio.gather(*tasks)
-    for (name, index), result in zip(refs, done):
+    changed = False
+    for (name, index), (result, touched) in zip(refs, done):
         results[name][index] = result
+        changed = changed or touched
+    if changed:
+        _save_fail_cache(cache)
     return results
 
 
-def run_usage_check(config: GatewayConfig, timeout: float = 15.0) -> dict[str, list[UsageResult]]:
-    return asyncio.run(check_all_usage(config, timeout))
+def run_usage_check(
+    config: GatewayConfig, timeout: float = 15.0, force: bool = False
+) -> dict[str, list[UsageResult]]:
+    return asyncio.run(check_all_usage(config, timeout, force=force))

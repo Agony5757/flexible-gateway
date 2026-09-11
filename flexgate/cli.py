@@ -137,21 +137,30 @@ def cmd_usage(args: argparse.Namespace) -> None:
         err(f"Config not found: {config_path} — run 'flexgate config init' to create one.", 1)
 
     config = load_config(config_path)
-    _print_usage(config, getattr(args, "usage_timeout", 15.0))
+    _print_usage(config, getattr(args, "usage_timeout", 15.0), force=getattr(args, "force", False))
 
 
-def _print_usage(config, timeout: float) -> None:
-    from flexgate.usage import run_usage_check
+def _print_usage(config, timeout: float, force: bool = False) -> None:
+    from flexgate.usage import FORCE_HINT, run_usage_check
 
     print("\n" + _bold("Usage") + _dim(f" (timeout {timeout:g}s per key)"))
-    usage = run_usage_check(config, timeout=timeout)
+    usage = run_usage_check(config, timeout=timeout, force=force)
+    skipped = sum(1 for results in usage.values() for r in results if r.skipped)
+    if skipped:
+        print(_dim(f"  {skipped} key(s) skipped — last check failed ({FORCE_HINT})"))
     for name, results in usage.items():
         print(f"  {_bold(_cyan(name))}")
         for r in results:
-            marker = _green("✓") if r.ok else _red("✗")
+            if r.skipped:
+                marker = _dim("✓") if r.ok else _dim("✗")
+            else:
+                marker = _green("✓") if r.ok else _red("✗")
             print(f"    {marker} {r.key_label}  {_dim(r.method)}")
             for line in r.lines:
-                print(f"        {line if r.ok else _red(line)}")
+                if line == FORCE_HINT:
+                    print(f"        {_dim(line)}")
+                else:
+                    print(f"        {line if r.ok else _red(line)}")
 
 
 # ── settings subcommands ────────────────────────────────────────────
@@ -1069,6 +1078,10 @@ def main() -> None:
     usage_p.add_argument(
         "--usage-timeout", type=float, default=15.0,
         help="Per-key usage query timeout in seconds (default: 15.0)"
+    )
+    usage_p.add_argument(
+        "--force", action="store_true",
+        help="Recheck keys whose last usage check failed (skipped by default)"
     )
 
     # flexgate log ...
