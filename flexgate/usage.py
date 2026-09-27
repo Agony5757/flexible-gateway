@@ -14,6 +14,11 @@ known adapter and queries it with the provider's own API key:
               returns weekly quota, 5-hour window and parallel limit)
 * z.ai      → GET {origin}/api/monitor/usage/quota/limit
               (undocumented but used by z.ai's own coding plugin)
+* zhipu team→ GET {origin}/api/monitor/usage/quota/limit?type=2 with
+              bigmodel-organization/bigmodel-project headers taken from the
+              key entry's organization/project fields, plus the team
+              subscription detail for the plan name/expiry; keys without
+              both fields cannot be queried and get the plain probe
 * LiteLLM   → GET {origin}/key/info   (e.g. USTC api.llm.ustc.edu.cn)
 * anything else (e.g. Xiaomi MiMo, which has no key-based usage API)
             → minimal chat probe: POST /v1/messages with input "hi" and
@@ -176,8 +181,9 @@ async def _get_json(
 
 
 async def _usage_minimax(
-    client: httpx.AsyncClient, provider: ProviderConfig, key: str, timeout: float
+    client: httpx.AsyncClient, provider: ProviderConfig, entry: ApiKey, timeout: float
 ) -> tuple[list[str], str | None]:
+    key = entry.key
     url = f"{_origin(provider.base_url)}/v1/api/openplatform/coding_plan/remains"
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     data, err = await _get_json(client, url, headers, timeout)
@@ -217,8 +223,9 @@ async def _usage_minimax(
 
 
 async def _usage_zai(
-    client: httpx.AsyncClient, provider: ProviderConfig, key: str, timeout: float
+    client: httpx.AsyncClient, provider: ProviderConfig, entry: ApiKey, timeout: float
 ) -> tuple[list[str], str | None]:
+    key = entry.key
     url = f"{_origin(provider.base_url)}/api/monitor/usage/quota/limit"
     headers = {"Authorization": key, "Content-Type": "application/json"}
     data, err = await _get_json(client, url, headers, timeout)
@@ -247,9 +254,75 @@ async def _usage_zai(
     return lines or ["no quota data"], None
 
 
-async def _usage_litellm(
-    client: httpx.AsyncClient, provider: ProviderConfig, key: str, timeout: float
+def _zhipu_team_headers(entry: ApiKey) -> dict[str, str]:
+    return {
+        "Authorization": entry.key,
+        "Content-Type": "application/json",
+        "bigmodel-organization": entry.organization,
+        "bigmodel-project": entry.project,
+    }
+
+
+async def _zhipu_team_plan(
+    client: httpx.AsyncClient, provider: ProviderConfig, entry: ApiKey, timeout: float
+) -> str | None:
+    """Best-effort team subscription detail: plan name and expiry."""
+    url = f"{_origin(provider.base_url)}/api/biz/team/subscribe/product/querySubscribeDetail"
+    data, err = await _get_json(client, url, _zhipu_team_headers(entry), timeout)
+    if err or not data.get("success", False):
+        return None
+    detail = data.get("data") or {}
+    name = detail.get("productName")
+    if not name:
+        return None
+    line = f"plan: {name}"
+    end = detail.get("subscribeEndTime")
+    if end:
+        line += f" (until {end}"
+        if detail.get("autoRenew") == 0:
+            line += ", auto-renew off"
+        line += ")"
+    return line
+
+
+async def _usage_zhipu_team(
+    client: httpx.AsyncClient, provider: ProviderConfig, entry: ApiKey, timeout: float
 ) -> tuple[list[str], str | None]:
+    url = f"{_origin(provider.base_url)}/api/monitor/usage/quota/limit?type=2"
+    data, err = await _get_json(client, url, _zhipu_team_headers(entry), timeout)
+    if err:
+        return [], err
+    if not data.get("success", False):
+        return [], f"platform error: {data.get('msg', 'unknown')}"
+    payload = data.get("data", {}) or {}
+    limits = payload.get("limits") or []
+    if not limits:
+        # type=2 answers success with empty limits when the key does not
+        # belong to the configured organization/project.
+        return [], "empty limits — key is not a member of the configured organization/project"
+    lines: list[str] = []
+    plan = await _zhipu_team_plan(client, provider, entry, timeout)
+    if plan:
+        lines.append(plan)
+    for limit in limits:
+        if not isinstance(limit, dict):
+            continue
+        # team plans are credit-metered; keep TOKENS_LIMIT handling anyway
+        if limit.get("type") not in ("CREDIT_LIMIT", "TOKENS_LIMIT"):
+            continue
+        # unit 3 = N-hour rolling window, unit 6 = weekly window
+        window = f"{limit.get('number', '?')}h" if limit.get("unit") == 3 else "weekly"
+        lines.append(
+            f"{window} window: used {limit.get('currentValue', '?')}/{limit.get('usage', '?')} "
+            f"credits ({limit.get('percentage', '?')}%), reset {_fmt_epoch_ms(limit.get('nextResetTime'))}"
+        )
+    return lines or ["no quota data"], None
+
+
+async def _usage_litellm(
+    client: httpx.AsyncClient, provider: ProviderConfig, entry: ApiKey, timeout: float
+) -> tuple[list[str], str | None]:
+    key = entry.key
     url = f"{_origin(provider.base_url)}/key/info"
     headers = {"Authorization": f"Bearer {key}"}
     data, err = await _get_json(client, url, headers, timeout)
@@ -278,8 +351,9 @@ async def _usage_litellm(
 
 
 async def _usage_kimi(
-    client: httpx.AsyncClient, provider: ProviderConfig, key: str, timeout: float
+    client: httpx.AsyncClient, provider: ProviderConfig, entry: ApiKey, timeout: float
 ) -> tuple[list[str], str | None]:
+    key = entry.key
     base = provider.base_url.rstrip("/")
     url = f"{base}/usages" if base.endswith("/v1") else f"{base}/v1/usages"
     headers = {"Authorization": f"Bearer {key}"}
@@ -323,18 +397,31 @@ _ADAPTERS = [
     ("minimax.io", _usage_minimax, "MiniMax coding_plan API"),
     ("api.kimi.com", _usage_kimi, "Kimi Code usages API (unofficial)"),
     ("z.ai", _usage_zai, "z.ai quota API (unofficial)"),
-    ("bigmodel.cn", _usage_zai, "z.ai quota API (unofficial)"),
+    ("bigmodel.cn", _usage_zhipu_team, "zhipu team quota API (unofficial)"),
     ("llm.ustc.edu.cn", _usage_litellm, "LiteLLM /key/info"),
 ]
 
 # Platforms known to have NO key-based usage API — go straight to the probe.
 _PROBE_ONLY_MARKERS = ("xiaomimimo.com",)
 
+# bigmodel.cn marker, reused to explain why a key got no quota adapter.
+_ZHIPU_MARKER = "bigmodel.cn"
 
-def _find_adapter(base_url: str):
+
+def _find_adapter(base_url: str, entry: ApiKey):
+    """First matching adapter for a base_url. Returns (adapter, label).
+
+    A bigmodel.cn (zhipu) team key whose entry lacks organization/project has
+    no quota endpoint to query — the personal coding-plan endpoint does not
+    apply to team keys — so it returns (None, None) and falls through to the
+    availability probe.
+    """
     for marker, adapter, label in _ADAPTERS:
-        if marker in base_url:
-            return adapter, label
+        if marker not in base_url:
+            continue
+        if adapter is _usage_zhipu_team and not (entry.organization and entry.project):
+            return None, None
+        return adapter, label
     return None, None
 
 
@@ -391,10 +478,10 @@ async def check_key_usage(
     if any(marker in provider.base_url for marker in _PROBE_ONLY_MARKERS):
         adapter, method = None, None
     else:
-        adapter, method = _find_adapter(provider.base_url)
+        adapter, method = _find_adapter(provider.base_url, entry)
 
     if adapter is not None:
-        lines, err = await adapter(client, provider, key, timeout)
+        lines, err = await adapter(client, provider, entry, timeout)
         if err is None:
             return UsageResult(provider.name, label, method, True, lines)
         logger.debug("usage adapter %s failed for %s: %s; falling back to probe", method, provider.name, err)
@@ -410,6 +497,10 @@ async def check_key_usage(
     lines, err = await _probe_chat(client, provider, key, timeout)
     method = f'minimal chat probe ("{_PROBE_INPUT}", max_tokens={_PROBE_MAX_TOKENS})'
     if err is None:
+        if _ZHIPU_MARKER in provider.base_url and not (entry.organization and entry.project):
+            lines = lines + [
+                "team quota not queried: set organization/project on this key entry"
+            ]
         return UsageResult(provider.name, label, method, True, lines)
     return UsageResult(provider.name, label, method, False, [err])
 

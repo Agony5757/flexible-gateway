@@ -8,7 +8,8 @@
 |------|----------|------|
 | MiniMax（api.minimaxi.com / api.minimax.io） | `GET /v1/api/openplatform/coding_plan/remains`（Bearer 认证，复用 provider key） | 官方 token plan 接口，返回 5 小时窗口和周窗口的**剩余**次数（注意响应里 `*_usage_count` 字段实际是剩余量） |
 | Kimi Code（api.kimi.com） | `GET {base}/v1/usages`（Bearer 认证，复用 provider key） | 未公开文档、与 Kimi Code CLI `/usage` 相同的接口，返回周配额、5 小时滚动窗口剩余量和并发上限 |
-| z.ai / 智谱（api.z.ai / open.bigmodel.cn） | `GET /api/monitor/usage/quota/limit`（Authorization 直接带 key） | 未公开文档、但 z.ai 官方 coding 插件在用的接口，返回各窗口已用百分比与重置时间。**仅对 GLM Coding Plan 订阅有效**：普通按量付费 key 会返回"当前用户不存在coding plan"并退化为 probe（余额只能在网页控制台查看） |
+| z.ai 个人版（api.z.ai） | `GET /api/monitor/usage/quota/limit`（Authorization 直接带 key） | 未公开文档、但 z.ai 官方 coding 插件在用的接口，返回各窗口已用百分比与重置时间。**仅对 GLM Coding Plan 个人订阅有效**：按量付费 key 会返回"当前用户不存在coding plan"并退化为 probe |
+| 智谱团队版（open.bigmodel.cn） | `GET /api/monitor/usage/quota/limit?type=2`，带 `bigmodel-organization`/`bigmodel-project` 头（取自 key 条目的 `organization`/`project` 字段） | 同一 monitor 接口的团队版变体，返回 5 小时/每周窗口的积分用量（绝对值 + 百分比 + 重置时间）；另查 `querySubscribeDetail` 显示套餐名与有效期。**key 条目未配 `organization`/`project` 时不查询**，退化为 probe（团队 key 不适用个人版接口） |
 | USTC（api.llm.ustc.edu.cn，LiteLLM） | `GET /key/info`（Bearer 认证） | LiteLLM proxy 自带的 key 信息接口，返回 spend / max_budget / 限速等 |
 | 小米 MiMo（token-plan-cn.xiaomimimo.com） | **无 key 可用的官方接口**（控制台内部接口需要浏览器 cookie，不采用） | 退化为 minimal probe |
 | 其他/未知平台 | minimal chat probe | 发一条输入 `"hi"`、`max_tokens=128` 的最小 `/v1/messages` 请求，验证 key 是否还能正常服务（会消耗极少量额度） |
@@ -31,8 +32,8 @@
 ```text
 Usage (timeout 15s per key)
   2 key(s) skipped — last check failed (recheck with: flexgate usage --force)
-  zhipu
-    ✓ key #1 (0b4d***MZTV) [fangyuan]  cached (15s ago)
+  zai
+    ✓ key #1 (9f2c***abCD)  cached (15s ago)
         z.ai quota API (unofficial) failed (platform error: 当前用户不存在coding plan); probe: key can serve glm-5.3
         recheck with: flexgate usage --force
   ustc
@@ -60,11 +61,17 @@ Usage (timeout 15s per key):
         weekly remaining 63/100 (reset 08-28 22:17)
         5h window remaining 74/100 (reset 08-23 14:17)
         parallel limit: 30
+  zhipu-team:
+    ✓ key #2 (ddb6***oZoj) [zhangsiyi]  zhipu team quota API (unofficial)
+        plan: 团队套餐高级版 (until 2026-10-14, auto-renew off)
+        5h window: used 264/35000 credits (1%), reset 09-25 14:00
+        weekly window: used 93043/155000 credits (60%), reset 09-28 16:17
 ```
 
 ## 新增平台适配器
 
 适配器登记在 `flexgate/usage.py` 的 `_ADAPTERS` 列表中：每条是
-`(url 子串, 适配器协程, 方法标签)`，首个命中生效。已知没有 key 可用接口的
-平台放入 `_PROBE_ONLY_MARKERS`，直接走 probe，避免浪费一次失败的 HTTP
-请求。
+`(url 子串, 适配器协程, 方法标签)`，首个命中生效。bigmodel.cn 的团队版
+适配器额外要求 key 条目上配置 `organization`/`project`，否则视为无适配
+接口。已知没有 key 可用接口的平台放入 `_PROBE_ONLY_MARKERS`，直接走
+probe，避免浪费一次失败的 HTTP 请求。

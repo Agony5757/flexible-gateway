@@ -320,6 +320,13 @@ providers:
       - key: "your-minimax-api-key-2"
         note: "备用账号"
       - "your-minimax-api-key-3"   # 纯字符串写法（无备注）
+  zhipu-team:
+    base_url: "https://open.bigmodel.cn/api/anthropic"
+    api_keys:
+      - key: "your-zhipu-team-api-key"
+        note: "队友名"
+        organization: "org-XXXXXXXX"  # 智谱团队版 key：组织/项目 ID
+        project: "proj_XXXXXXXX"      # （flexgate usage 查团队套餐额度用）
 
 claude_settings:
   default_opus_model: "claude-opus-4-7"
@@ -359,7 +366,7 @@ routes:                          # 从上到下匹配，首个命中生效
 |------|------|
 | `server.host/port` | 网关监听地址 |
 | `providers.<name>.base_url` | Provider 的 API 地址 |
-| `providers.<name>.api_keys` | API key 列表（一个或多个，互为 fallback）；每项为 key 字符串或 `{key, note}`，`note` 是存在配置里的备注 |
+| `providers.<name>.api_keys` | API key 列表（一个或多个，互为 fallback）；每项为 key 字符串或 `{key, note}`（`note` 是备注）。智谱团队版 key 还可加 `organization`/`project`（团队组织/项目 ID），供 `flexgate usage` 查询团队套餐额度 |
 | `providers.<name>.available_models` | 该 provider 的可用模型列表，首个条目作为路由省略 `model` 时的回退模型 |
 | `claude_settings.*` | 写入 settings.json 的模型和超时配置 |
 | `routes[].pattern` | 正则匹配请求中的 model 字段（匹配前归一化裸别名 `sonnet`/`opus`/`haiku`/`default` 与旧编号名） |
@@ -393,6 +400,10 @@ routes:                          # 从上到下匹配，首个命中生效
 - 每次切换都会在服务日志中留下记录（key 只显示前后各 4 位）。
 - 用 `flexgate status` 可以查看每个 provider 的 fallback 链和每个 key 的
   实时用量。
+- 智谱 GLM Coding Plan **团队版** key 在条目上配 `organization`/`project`
+  （团队组织/项目 ID）后，`flexgate status`/`usage` 会用团队版接口查询
+  套餐名、有效期和 5 小时/每周积分窗口；未配置这两个字段的 key 只做
+  连通性探测。
 - 旧版 `api_key` + `fallback_keys` 写法仍然兼容，`flexgate update` 会
   自动迁移为 `api_keys` 列表（config_version 3 → 4）。
 

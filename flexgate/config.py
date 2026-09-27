@@ -35,9 +35,16 @@ def is_placeholder_key(key: str) -> bool:
 
 @dataclass
 class ApiKey:
-    """One API key for a provider, with an optional human-readable note."""
+    """One API key for a provider, with an optional human-readable note.
+
+    ``organization``/``project`` identify the team a zhipu (bigmodel.cn)
+    GLM Coding Plan *team* key belongs to; the usage check passes them as the
+    bigmodel-organization/bigmodel-project headers of the team quota query.
+    """
     key: str
     note: str = ""
+    organization: str = ""
+    project: str = ""
 
 
 @dataclass
@@ -122,7 +129,9 @@ def _parse_api_keys(name: str, prov: dict) -> list[ApiKey]:
     """Parse a provider's key list.
 
     Current schema: ``api_keys`` — a list whose entries are either a plain
-    key string or a mapping ``{key: ..., note: ...}``. The legacy schema
+    key string or a mapping ``{key: ..., note: ..., organization: ...,
+    project: ...}`` (``note`` free-form; ``organization``/``project`` are the
+    zhipu team IDs used by the usage check). The legacy schema
     (``api_key`` plus optional ``fallback_keys``) is still accepted.
     """
     raw = prov.get("api_keys")
@@ -136,7 +145,19 @@ def _parse_api_keys(name: str, prov: dict) -> list[ApiKey]:
         if isinstance(item, str):
             keys.append(ApiKey(key=item))
         elif isinstance(item, dict) and isinstance(item.get("key"), str):
-            keys.append(ApiKey(key=item["key"], note=str(item.get("note") or "")))
+            organization = str(item.get("organization") or "")
+            project = str(item.get("project") or "")
+            if bool(organization) != bool(project):
+                raise ValueError(
+                    f"Provider '{name}': api_keys entry '{item['key'][:4]}***' sets "
+                    f"only one of 'organization'/'project' — set both or neither"
+                )
+            keys.append(ApiKey(
+                key=item["key"],
+                note=str(item.get("note") or ""),
+                organization=organization,
+                project=project,
+            ))
         else:
             raise ValueError(
                 f"Provider '{name}': each api_keys entry must be a key string "
@@ -262,6 +283,21 @@ def _format_hhmm(minutes: int) -> str:
     return f"{minutes // 60:02d}:{minutes % 60:02d}"
 
 
+def _serialize_key(k: ApiKey) -> dict | str:
+    """Key entry → YAML value: a plain string, or a mapping that keeps the
+    note and the zhipu-team organization/project fields."""
+    if not (k.note or k.organization or k.project):
+        return k.key
+    data: dict = {"key": k.key}
+    if k.note:
+        data["note"] = k.note
+    if k.organization:
+        data["organization"] = k.organization
+    if k.project:
+        data["project"] = k.project
+    return data
+
+
 def save_config(cfg: GatewayConfig, path: str | None = None) -> None:
     import yaml
 
@@ -287,10 +323,7 @@ def save_config(cfg: GatewayConfig, path: str | None = None) -> None:
     for name, prov in cfg.providers.items():
         entry: dict = {
             "base_url": prov.base_url,
-            "api_keys": [
-                {"key": k.key, "note": k.note} if k.note else k.key
-                for k in prov.api_keys
-            ],
+            "api_keys": [_serialize_key(k) for k in prov.api_keys],
         }
         if prov.available_models:
             entry["available_models"] = list(prov.available_models)
@@ -329,7 +362,11 @@ server:
 # a plain key string or {key, note} where `note` is a free-form label stored
 # in the config (shown by `flexgate status`, included in fallback logs).
 # Multiple accounts on the same upstream should be configured this way
-# instead of as separate providers. A route's `active_key` (see below)
+# instead of as separate providers. zhipu GLM Coding Plan *team* keys also
+# carry `organization`/`project` — the team IDs copied once from the team
+# usage page's request headers; `flexgate usage` needs them to query the
+# team plan quota, and without them the key only gets an availability probe.
+# A route's `active_key` (see below)
 # selects which key its requests start from; when that key fails with a
 # retryable error (401/402/403/429/5xx/529 or a connection error — e.g.
 # quota exhausted or provider overloaded), the request is retried with the
@@ -353,6 +390,15 @@ providers:
     available_models:
       - "glm-5.3"      # used as fallback when a route omits `model`
       - "glm-4.6v"
+  zhipu-team:
+    base_url: "https://open.bigmodel.cn/api/anthropic"
+    api_keys:
+      - key: "your-zhipu-team-api-key"
+        note: "teammate name"
+        organization: "org-XXXXXXXX"   # zhipu team IDs (see comment above)
+        project: "proj_XXXXXXXX"
+    available_models:
+      - "glm-5.3"
   xiaomi:
     base_url: "https://token-plan-cn.xiaomimimo.com/anthropic"
     api_keys:

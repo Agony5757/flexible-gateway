@@ -8,6 +8,9 @@ server:
 # 日志都会显示）。某个 key 遇到 401/402/403/429/5xx/529 或连接错误（如额度
 # 用尽、平台过载）时，按顺序自动切换到下一个 key 重试。同一上游的多个账号
 # 应这样配置，而不是拆成多个 provider。
+# 智谱 GLM Coding Plan 团队版 key 还需在 key 条目上配置 organization 和
+# project（团队组织/项目 ID，从团队用量页的浏览器请求头里一次性获取）；
+# flexgate usage 依赖这两个字段查询团队套餐额度，未配置则只做连通性探测。
 providers:
   minimax:
     base_url: "https://api.minimaxi.com/anthropic"
@@ -26,6 +29,15 @@ providers:
     available_models:
       - "glm-5.3"      # 路由省略 model 时的回退模型
       - "glm-4.6v"
+  zhipu-team:
+    base_url: "https://open.bigmodel.cn/api/anthropic"
+    api_keys:
+      - key: "your-zhipu-team-api-key"
+        note: "队友名"
+        organization: "org-XXXXXXXX"    # 智谱团队版：组织 ID
+        project: "proj_XXXXXXXX"        # 智谱团队版：项目 ID
+    available_models:
+      - "glm-5.3"
   xiaomi:
     base_url: "https://token-plan-cn.xiaomimimo.com/anthropic"
     api_keys:
