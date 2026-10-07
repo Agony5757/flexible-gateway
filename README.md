@@ -149,17 +149,33 @@ Trusted Publisher（repo: `Agony5757/flexible-gateway`，workflow: `release.yml`
 ### 状态总览与用量查询（`flexgate status` / `flexgate usage`）
 
 ```bash
-flexgate status                  # providers + fallback 链 + 每个 key 的用量 + 当前路由
+flexgate status                  # providers + fallback 链 + 每个 key 的用量摘要 + 当前路由
 flexgate status --no-usage       # 跳过用量查询，只看配置
 flexgate status --usage-timeout 30
-flexgate usage                   # 只看每个 key 的用量/额度（不打印配置和路由）
+flexgate usage                   # 只看每个 key 的用量/额度（统一摘要）
 flexgate usage --usage-timeout 30
 flexgate usage --force           # 重查上次失败的 key（默认跳过，读缓存）
+flexgate usage --verbose         # 显示各适配器的原始明细（旧行为）
+flexgate usage --time-format hours  # 倒计时格式：dhm（默认）/ hours / minutes
 ```
 
 `flexgate status` 展示当前配置中的所有 provider、每个 provider 的 key 及
 fallback 链、当前生效的路由，并逐一查询**每个 key** 的用量/额度；
 `flexgate usage` 只输出其中的用量部分。
+
+用量默认输出**统一摘要**——每个 key 一行的套餐名、5h 余额百分比、周余额
+百分比、5h 剩余时间、周用量剩余时间：
+
+```text
+Usage (timeout 15s per key)
+  zai
+    ✓ #1 cbc4***sL7n [main]  plan pro   5h 88% · 4h 36m   weekly 81% · 6d 16h 15m
+    ✓ #2 302b***RLBh [gsj]   plan max   5h 100% · —   weekly 99% · 6d 17h 46m
+```
+
+平台未返回的数据（明细里的 `?`）有固定语义：余额 `?` → `0%`；重置
+时间 `?` → `—`（无倒计时，窗口未计数）。`--verbose` 显示原始明细；
+`--json` 输出结构化数据（见下）。
 
 各平台的用量查询方式差异很大，flexgate 按 `base_url` 自动选择适配器：
 
@@ -282,6 +298,15 @@ API_TIMEOUT_MS、三个 `ANTHROPIC_DEFAULT_*_MODEL`），settings.json 中的
 
 - `--config PATH` 指定配置文件（默认 `~/.flexgate/config.yaml`）
 - `--port PORT` 覆盖配置文件中的端口（仅 `flexgate run`）
+
+### `--json`：机器可读输出
+
+除 `run`（前台服务器日志流）、`config edit`（交互 TUI）和 `help` 外，
+所有数据型子命令都支持 `--json`（如 `flexgate usage --json`），输出
+`{"ok": true, ...}` 结构化 JSON；命令失败时输出 `{"ok": false, "error": ...}`
+并以非零退出码结束。key/凭证一律掩码。各命令的 JSON 字段说明见
+[CLI 文档](https://agony5757.github.io/flexible-gateway/cli.html)；
+`usage --json` 的结构见[用量查询文档](https://agony5757.github.io/flexible-gateway/usage.html)。
 
 ## 配置文件
 

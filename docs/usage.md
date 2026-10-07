@@ -1,6 +1,10 @@
 # 用量查询
 
 `flexgate status` 和 `flexgate usage` 会逐一查询**每个 key** 的用量/额度。
+默认输出**统一摘要**：每个 key 一行，包含套餐名、5 小时窗口余额百分比、
+周窗口余额百分比、5 小时窗口剩余时间（距重置的倒计时）和周用量剩余时间；
+`--verbose` 才显示各适配器的原始明细。
+
 各平台的查询方式差异很大（有的平台根本没有可用的接口），flexgate 按
 `base_url` 自动选择适配器：
 
@@ -20,6 +24,103 @@
 :::{caution}
 用量查询接口多为平台内部接口，可能随时变动；查询结果仅供参考。
 :::
+
+## 统一摘要（默认输出）
+
+```text
+Usage (timeout 15s per key)
+  zai
+    ✓ #1 cbc4***sL7n [main]  plan pro   5h 88% · 4h 36m   weekly 81% · 6d 16h 15m
+    ✓ #2 302b***RLBh [gsj]   plan max   5h 100% · —   weekly 99% · 6d 17h 46m
+  ustc
+    ✗ #1 sk-G***jJYg  LiteLLM /key/info failed (ConnectError: ); probe: ConnectError:
+```
+
+- **plan**：套餐名（z.ai 的 pro/max、智谱团队的套餐名、Kimi 的会员等级）；
+  平台不提供时显示 `—`。
+- **5h / weekly 百分比**：窗口**剩余**百分比（≤25% 黄色、≤10% 红色）。
+- **倒计时**：距窗口重置的剩余时间。`--time-format` 控制格式：
+  - `dhm`（默认）：`4d 4h 23m` / `2h 47m` / `23m`
+  - `hours`：`52.1h`
+  - `minutes`：`3125m`
+- 无配额接口的 key（probe / 缓存失败）只显示一行方法或错误摘要。
+
+### "?" 值的语义
+
+平台有时不返回某项数据（verbose 明细里显示 `?`）。统一摘要按如下处理：
+
+- **余额 `?` → `0%`**：平台没有报余额时按 0 计（如 Kimi 的
+  `weekly remaining ?/100`）。
+- **重置时间 `?` → `—`（无倒计时）**：平台没有返回重置时间通常表示
+  窗口未激活、没有正在进行的计数（如 z.ai / 智谱 5h 窗口用量为 0 时）。
+  JSON 输出中对应字段为 `null`。
+
+## `--verbose`：原始明细
+
+`flexgate usage --verbose`（`flexgate status --verbose` 同理）输出各适配器
+的原始逐行信息，与旧版输出一致：
+
+```text
+Usage (timeout 15s per key)
+  kimi:
+    ✓ key #1 (sk-k***66N6) [ywj]  Kimi Code usages API (unofficial)
+        plan: advanced
+        weekly remaining 63/100 (reset 08-28 22:17)
+        5h window remaining 74/100 (reset 08-23 14:17)
+        parallel limit: 30
+  zhipu-team:
+    ✓ key #2 (ddb6***oZoj) [zhangsiyi]  zhipu team quota API (unofficial)
+        plan: 团队套餐高级版 (until 2026-10-14, auto-renew off)
+        5h window: used 264/35000 credits (1%), reset 09-25 14:00
+        weekly window: used 93043/155000 credits (60%), reset 09-28 16:17
+```
+
+## `--json`：结构化输出
+
+`flexgate usage --json`（以及 `flexgate status --json` 的 `usage` 字段）输出
+结构化数据；`--json --verbose` 额外附带每个 key 的 `raw_lines`：
+
+```json
+{
+  "ok": true,
+  "version": "0.10.0",
+  "timeout": 15.0,
+  "skipped": 0,
+  "providers": [
+    {
+      "provider": "minimax",
+      "keys": [
+        {
+          "index": 1,
+          "key": "sk-c***jbgk",
+          "note": "main",
+          "ok": true,
+          "skipped": false,
+          "method": "MiniMax coding_plan API",
+          "adapter_error": null,
+          "plan": null,
+          "five_hour": {
+            "remaining_percent": 100.0,
+            "remaining_seconds": 9241,
+            "reset_at": "2026-10-07T20:00:00+08:00",
+            "window_hours": 5.0
+          },
+          "weekly": {
+            "remaining_percent": 99.0,
+            "remaining_seconds": 369241,
+            "reset_at": "2026-10-12T00:00:00+08:00"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+- 字段语义与统一摘要一致：余额未知 → `remaining_percent: 0.0`；
+  重置时间未知 → `remaining_seconds`/`reset_at` 为 `null`。
+- 平台额外信息保留在 `window_hours`（如 5.0）和 `used`（原始用量文本）。
+- key 一律掩码显示，永不输出明文。
 
 ## 查询失败缓存与 `--force`
 
@@ -47,26 +148,6 @@ Usage (timeout 15s per key)
 - `flexgate usage --force` 忽略缓存、重新查询所有 key 并更新缓存；
   重查干净成功（无任何报错）的 key 会自动清除缓存条目，恢复默认实时查询。
 - 占位符 key（未填写的默认值）不会进入缓存。
-
-## 输出示例
-
-```text
-Usage (timeout 15s per key):
-  minimax:
-    ✓ key #1 (sk-c***abcd) [main]  MiniMax coding_plan API
-        MiniMax-M3: 5h window remaining 450/450 (reset 08-24 00:00); weekly remaining 900/900 (reset 08-24 00:00)
-  kimi:
-    ✓ key #1 (sk-k***66N6) [ywj]  Kimi Code usages API (unofficial)
-        plan: advanced
-        weekly remaining 63/100 (reset 08-28 22:17)
-        5h window remaining 74/100 (reset 08-23 14:17)
-        parallel limit: 30
-  zhipu-team:
-    ✓ key #2 (ddb6***oZoj) [zhangsiyi]  zhipu team quota API (unofficial)
-        plan: 团队套餐高级版 (until 2026-10-14, auto-renew off)
-        5h window: used 264/35000 credits (1%), reset 09-25 14:00
-        weekly window: used 93043/155000 credits (60%), reset 09-28 16:17
-```
 
 ## 新增平台适配器
 

@@ -23,6 +23,13 @@ known adapter and queries it with the provider's own API key:
 * anything else (e.g. Xiaomi MiMo, which has no key-based usage API)
             → minimal chat probe: POST /v1/messages with input "hi" and
               max_tokens=128 to verify the key can still serve requests
+
+Alongside the human-readable ``lines``, every adapter fills a normalized
+``QuotaInfo`` (plan name + 5-hour/weekly ``WindowQuota`` with remaining
+percent and reset epoch) so the CLI can render one unified summary and
+``--json`` consumers get structured fields. Data a platform did not report
+(the "?" cases) stays None: an unknown balance is displayed as 0% and an
+unknown reset time means no countdown is active.
 """
 
 from __future__ import annotations
@@ -60,6 +67,27 @@ FORCE_HINT = "recheck with: flexgate usage --force"
 
 
 @dataclass
+class WindowQuota:
+    """One quota window (5-hour or weekly), normalized across platforms.
+
+    ``remaining_percent`` / ``reset_epoch`` stay None when the platform did
+    not report them (displayed as 0% / "no countdown"; null in JSON).
+    """
+
+    remaining_percent: float | None = None
+    reset_epoch: float | None = None  # epoch seconds
+    window_hours: float | None = None  # e.g. 5.0 for a 5-hour window
+    used_text: str | None = None  # raw usage text, e.g. "1513/35000 credits"
+
+
+@dataclass
+class QuotaInfo:
+    plan: str | None = None
+    five_hour: WindowQuota | None = None
+    weekly: WindowQuota | None = None
+
+
+@dataclass
 class UsageResult:
     provider: str
     key_label: str  # e.g. "key #1 (sk-c***wxyz)"
@@ -68,12 +96,23 @@ class UsageResult:
     lines: list[str] = field(default_factory=list)
     skipped: bool = False  # served from the failure cache, not queried now
     adapter_error: str | None = None  # adapter failed but the probe recovered
+    quota: QuotaInfo | None = None  # normalized plan/window data (None for probe/cache results)
+    index: int = 0  # 0-based position within the provider's key list
+    masked_key: str = ""
+    note: str = ""
 
 
 def _mask_key(key: str) -> str:
     if len(key) <= 8:
         return "***"
     return key[:4] + "***" + key[-4:]
+
+
+def _key_label(index: int, key: str, note: str) -> str:
+    label = f"key #{index + 1} ({_mask_key(key)})"
+    if note:
+        label += f" [{note}]"
+    return label
 
 
 # ── failure cache ────────────────────────────────────────────────────
@@ -156,6 +195,59 @@ def _fmt_iso(value) -> str:
         return "?"
 
 
+def _clamp_pct(value) -> float | None:
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(100.0, pct))
+
+
+def _remaining_from_used_pct(used_pct) -> float | None:
+    """remaining% = 100 - used%, clamped; None when the platform reported none."""
+    used = _clamp_pct(used_pct)
+    return None if used is None else 100.0 - used
+
+
+def _pct_from_counts(part, total) -> float | None:
+    """part/total as a percentage (both directions: used or remaining counts)."""
+    try:
+        total_f = float(total)
+        part_f = float(part)
+    except (TypeError, ValueError):
+        return None
+    if total_f <= 0:
+        return None
+    return max(0.0, min(100.0, part_f / total_f * 100.0))
+
+
+def _remaining_from_used_counts(used, total) -> float | None:
+    try:
+        return float(total) - float(used)
+    except (TypeError, ValueError):
+        return None
+
+
+def _epoch_ms(value) -> float | None:
+    """Epoch milliseconds → epoch seconds; None when missing/invalid/zero."""
+    if not value:
+        return None
+    try:
+        secs = float(value) / 1000.0
+    except (TypeError, ValueError):
+        return None
+    return secs if secs > 0 else None
+
+
+def _epoch_from_iso(value) -> float | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
 async def _get_json(
     client: httpx.AsyncClient, url: str, headers: dict[str, str], timeout: float
 ) -> tuple[dict | None, str | None]:
@@ -182,17 +274,18 @@ async def _get_json(
 
 async def _usage_minimax(
     client: httpx.AsyncClient, provider: ProviderConfig, entry: ApiKey, timeout: float
-) -> tuple[list[str], str | None]:
+) -> tuple[list[str], QuotaInfo | None, str | None]:
     key = entry.key
     url = f"{_origin(provider.base_url)}/v1/api/openplatform/coding_plan/remains"
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     data, err = await _get_json(client, url, headers, timeout)
     if err:
-        return [], err
+        return [], None, err
     base_resp = data.get("base_resp", {})
     if base_resp.get("status_code", 0) != 0:
-        return [], f"platform error {base_resp.get('status_code')}: {base_resp.get('status_msg', '')}"
+        return [], None, f"platform error {base_resp.get('status_code')}: {base_resp.get('status_msg', '')}"
     lines: list[str] = []
+    quota = QuotaInfo()
     for entry in data.get("model_remains", []):
         if not isinstance(entry, dict):
             continue
@@ -206,52 +299,75 @@ async def _usage_minimax(
         total = entry.get("current_interval_total_count")
         used = entry.get("current_interval_usage_count")
         pct = entry.get("current_interval_remaining_percent")
+        five = WindowQuota(window_hours=5.0, reset_epoch=_epoch_ms(entry.get("end_time")))
         if total:
             parts.append(f"5h window used {used}/{total} (reset {_fmt_epoch_ms(entry.get('end_time'))})")
+            five.used_text = f"{used}/{total}"
+            five.remaining_percent = _pct_from_counts(_remaining_from_used_counts(used, total), total)
         elif pct is not None:
             parts.append(f"5h window remaining {pct}% (reset {_fmt_epoch_ms(entry.get('end_time'))})")
+            five.remaining_percent = _clamp_pct(pct)
         w_total = entry.get("current_weekly_total_count")
         w_used = entry.get("current_weekly_usage_count")
         w_pct = entry.get("current_weekly_remaining_percent")
+        weekly = WindowQuota(reset_epoch=_epoch_ms(entry.get("weekly_end_time")))
         if w_total:
             parts.append(f"weekly used {w_used}/{w_total} (reset {_fmt_epoch_ms(entry.get('weekly_end_time'))})")
+            weekly.used_text = f"{w_used}/{w_total}"
+            weekly.remaining_percent = _pct_from_counts(_remaining_from_used_counts(w_used, w_total), w_total)
         elif w_pct is not None:
             parts.append(f"weekly remaining {w_pct}% (reset {_fmt_epoch_ms(entry.get('weekly_end_time'))})")
+            weekly.remaining_percent = _clamp_pct(w_pct)
+        quota.five_hour = five
+        quota.weekly = weekly
         if parts:
             lines.append("; ".join(parts))
-    return lines or ["plan active (no text-model quota data)"], None
+    return (lines or ["plan active (no text-model quota data)"]), quota, None
 
 
 async def _usage_zai(
     client: httpx.AsyncClient, provider: ProviderConfig, entry: ApiKey, timeout: float
-) -> tuple[list[str], str | None]:
+) -> tuple[list[str], QuotaInfo | None, str | None]:
     key = entry.key
     url = f"{_origin(provider.base_url)}/api/monitor/usage/quota/limit"
     headers = {"Authorization": key, "Content-Type": "application/json"}
     data, err = await _get_json(client, url, headers, timeout)
     if err:
-        return [], err
+        return [], None, err
     if not data.get("success", False):
-        return [], f"platform error: {data.get('msg', 'unknown')}"
+        return [], None, f"platform error: {data.get('msg', 'unknown')}"
     payload = data.get("data", {}) or {}
     lines: list[str] = []
-    level = payload.get("level")
+    quota = QuotaInfo(plan=payload.get("level") or None)
     for limit in payload.get("limits", []):
         if not isinstance(limit, dict):
             continue
         ltype = limit.get("type")
         if ltype == "TOKENS_LIMIT":
             # unit 3 = hours window, unit 6 = weekly window
-            window = f"{limit.get('number', '?')}h" if limit.get("unit") == 3 else "weekly"
+            is_5h = limit.get("unit") == 3
+            window = f"{limit.get('number', '?')}h" if is_5h else "weekly"
             lines.append(
                 f"{window} window: {limit.get('percentage', '?')}% used "
                 f"(reset {_fmt_epoch_ms(limit.get('nextResetTime'))})"
             )
+            wq = WindowQuota(
+                remaining_percent=_remaining_from_used_pct(limit.get("percentage")),
+                reset_epoch=_epoch_ms(limit.get("nextResetTime")),
+            )
+            if is_5h:
+                try:
+                    wq.window_hours = float(limit.get("number"))
+                except (TypeError, ValueError):
+                    pass
+                quota.five_hour = wq
+            else:
+                quota.weekly = wq
         elif ltype == "TIME_LIMIT":
             lines.append(f"tool calls (monthly): remaining {limit.get('remaining', '?')}/{limit.get('usage', '?')}")
-    if level:
-        lines.insert(0, f"plan: {level}")
-    return lines or ["no quota data"], None
+    if quota.plan:
+        lines.insert(0, f"plan: {quota.plan}")
+    return lines or ["no quota data"], quota, None
 
 
 def _zhipu_team_headers(entry: ApiKey) -> dict[str, str]:
@@ -263,19 +379,20 @@ def _zhipu_team_headers(entry: ApiKey) -> dict[str, str]:
     }
 
 
-async def _zhipu_team_plan(
+async def _zhipu_team_detail(
     client: httpx.AsyncClient, provider: ProviderConfig, entry: ApiKey, timeout: float
-) -> str | None:
-    """Best-effort team subscription detail: plan name and expiry."""
+) -> dict | None:
+    """Best-effort team subscription detail (productName, expiry, auto-renew)."""
     url = f"{_origin(provider.base_url)}/api/biz/team/subscribe/product/querySubscribeDetail"
     data, err = await _get_json(client, url, _zhipu_team_headers(entry), timeout)
     if err or not data.get("success", False):
         return None
     detail = data.get("data") or {}
-    name = detail.get("productName")
-    if not name:
-        return None
-    line = f"plan: {name}"
+    return detail if detail.get("productName") else None
+
+
+def _zhipu_team_plan_line(detail: dict) -> str:
+    line = f"plan: {detail.get('productName')}"
     end = detail.get("subscribeEndTime")
     if end:
         line += f" (until {end}"
@@ -287,23 +404,25 @@ async def _zhipu_team_plan(
 
 async def _usage_zhipu_team(
     client: httpx.AsyncClient, provider: ProviderConfig, entry: ApiKey, timeout: float
-) -> tuple[list[str], str | None]:
+) -> tuple[list[str], QuotaInfo | None, str | None]:
     url = f"{_origin(provider.base_url)}/api/monitor/usage/quota/limit?type=2"
     data, err = await _get_json(client, url, _zhipu_team_headers(entry), timeout)
     if err:
-        return [], err
+        return [], None, err
     if not data.get("success", False):
-        return [], f"platform error: {data.get('msg', 'unknown')}"
+        return [], None, f"platform error: {data.get('msg', 'unknown')}"
     payload = data.get("data", {}) or {}
     limits = payload.get("limits") or []
     if not limits:
         # type=2 answers success with empty limits when the key does not
         # belong to the configured organization/project.
-        return [], "empty limits — key is not a member of the configured organization/project"
+        return [], None, "empty limits — key is not a member of the configured organization/project"
     lines: list[str] = []
-    plan = await _zhipu_team_plan(client, provider, entry, timeout)
-    if plan:
-        lines.append(plan)
+    quota = QuotaInfo()
+    detail = await _zhipu_team_detail(client, provider, entry, timeout)
+    if detail:
+        quota.plan = detail.get("productName")
+        lines.append(_zhipu_team_plan_line(detail))
     for limit in limits:
         if not isinstance(limit, dict):
             continue
@@ -311,26 +430,40 @@ async def _usage_zhipu_team(
         if limit.get("type") not in ("CREDIT_LIMIT", "TOKENS_LIMIT"):
             continue
         # unit 3 = N-hour rolling window, unit 6 = weekly window
-        window = f"{limit.get('number', '?')}h" if limit.get("unit") == 3 else "weekly"
+        is_5h = limit.get("unit") == 3
+        window = f"{limit.get('number', '?')}h" if is_5h else "weekly"
         lines.append(
             f"{window} window: used {limit.get('currentValue', '?')}/{limit.get('usage', '?')} "
             f"credits ({limit.get('percentage', '?')}%), reset {_fmt_epoch_ms(limit.get('nextResetTime'))}"
         )
-    return lines or ["no quota data"], None
+        wq = WindowQuota(
+            remaining_percent=_remaining_from_used_pct(limit.get("percentage")),
+            reset_epoch=_epoch_ms(limit.get("nextResetTime")),
+            used_text=f"{limit.get('currentValue', '?')}/{limit.get('usage', '?')} credits",
+        )
+        if is_5h:
+            try:
+                wq.window_hours = float(limit.get("number"))
+            except (TypeError, ValueError):
+                pass
+            quota.five_hour = wq
+        else:
+            quota.weekly = wq
+    return lines or ["no quota data"], quota, None
 
 
 async def _usage_litellm(
     client: httpx.AsyncClient, provider: ProviderConfig, entry: ApiKey, timeout: float
-) -> tuple[list[str], str | None]:
+) -> tuple[list[str], QuotaInfo | None, str | None]:
     key = entry.key
     url = f"{_origin(provider.base_url)}/key/info"
     headers = {"Authorization": f"Bearer {key}"}
     data, err = await _get_json(client, url, headers, timeout)
     if err:
-        return [], err
+        return [], None, err
     info = data.get("info", data)
     if not isinstance(info, dict):
-        return [], "unexpected response shape"
+        return [], None, "unexpected response shape"
     lines: list[str] = []
     spend = info.get("spend")
     max_budget = info.get("max_budget")
@@ -347,28 +480,35 @@ async def _usage_litellm(
     expires = info.get("expires")
     if expires:
         lines.append(f"expires {_fmt_epoch_s(expires)}")
-    return lines or ["key valid (no quota fields exposed)"], None
+    return lines or ["key valid (no quota fields exposed)"], None, None
 
 
 async def _usage_kimi(
     client: httpx.AsyncClient, provider: ProviderConfig, entry: ApiKey, timeout: float
-) -> tuple[list[str], str | None]:
+) -> tuple[list[str], QuotaInfo | None, str | None]:
     key = entry.key
     base = provider.base_url.rstrip("/")
     url = f"{base}/usages" if base.endswith("/v1") else f"{base}/v1/usages"
     headers = {"Authorization": f"Bearer {key}"}
     data, err = await _get_json(client, url, headers, timeout)
     if err:
-        return [], err
+        return [], None, err
     lines: list[str] = []
+    quota = QuotaInfo()
     level = ((data.get("user") or {}).get("membership") or {}).get("level")
     if level:
-        lines.append(f"plan: {str(level).removeprefix('LEVEL_').lower()}")
+        quota.plan = str(level).removeprefix("LEVEL_").lower()
+        lines.append(f"plan: {quota.plan}")
     weekly = data.get("usage") or {}
     if weekly.get("limit"):
         lines.append(
             f"weekly remaining {weekly.get('remaining', '?')}/{weekly['limit']} "
             f"(reset {_fmt_iso(weekly.get('resetTime'))})"
+        )
+        quota.weekly = WindowQuota(
+            remaining_percent=_pct_from_counts(weekly.get("remaining"), weekly.get("limit")),
+            reset_epoch=_epoch_from_iso(weekly.get("resetTime")),
+            used_text=f"{weekly.get('remaining', '?')}/{weekly['limit']}",
         )
     for limit in data.get("limits", []):
         if not isinstance(limit, dict):
@@ -378,17 +518,28 @@ async def _usage_kimi(
         if window.get("timeUnit") != "TIME_UNIT_MINUTE":
             continue
         try:
+            hours = int(window.get("duration")) / 60
             label = f"{int(window.get('duration')) // 60}h"
         except (TypeError, ValueError):
+            hours = None
             label = "rate"
         lines.append(
             f"{label} window remaining {detail.get('remaining', '?')}/{detail.get('limit', '?')} "
             f"(reset {_fmt_iso(detail.get('resetTime'))})"
         )
+        # The short rolling window (5h) is the "five_hour" quota; longer or
+        # unknown windows stay in the raw lines only.
+        if hours is not None and hours <= 12:
+            quota.five_hour = WindowQuota(
+                remaining_percent=_pct_from_counts(detail.get("remaining"), detail.get("limit")),
+                reset_epoch=_epoch_from_iso(detail.get("resetTime")),
+                window_hours=hours,
+                used_text=f"{detail.get('remaining', '?')}/{detail.get('limit', '?')}",
+            )
     parallel = (data.get("parallel") or {}).get("limit")
     if parallel:
         lines.append(f"parallel limit: {parallel}")
-    return lines or ["key valid (no quota data)"], None
+    return lines or ["key valid (no quota data)"], quota, None
 
 
 # (url substring, adapter, method label). First match wins.
@@ -469,11 +620,14 @@ async def check_key_usage(
 ) -> UsageResult:
     """Check usage/availability of one key of one provider."""
     key = entry.key
-    label = f"key #{index + 1} ({_mask_key(key)})"
-    if entry.note:
-        label += f" [{entry.note}]"
+    label = _key_label(index, key, entry.note)
+    meta = {
+        "index": index,
+        "masked_key": _mask_key(key),
+        "note": entry.note,
+    }
     if is_placeholder_key(key):
-        return UsageResult(provider.name, label, "-", False, ["api_key looks like a placeholder"])
+        return UsageResult(provider.name, label, "-", False, ["api_key looks like a placeholder"], **meta)
 
     if any(marker in provider.base_url for marker in _PROBE_ONLY_MARKERS):
         adapter, method = None, None
@@ -481,18 +635,18 @@ async def check_key_usage(
         adapter, method = _find_adapter(provider.base_url, entry)
 
     if adapter is not None:
-        lines, err = await adapter(client, provider, entry, timeout)
+        lines, quota, err = await adapter(client, provider, entry, timeout)
         if err is None:
-            return UsageResult(provider.name, label, method, True, lines)
+            return UsageResult(provider.name, label, method, True, lines, quota=quota, **meta)
         logger.debug("usage adapter %s failed for %s: %s; falling back to probe", method, provider.name, err)
         probe_lines, probe_err = await _probe_chat(client, provider, key, timeout)
         note = f"{method} failed ({err}); probe: "
         if probe_err is None:
             return UsageResult(
                 provider.name, label, method, True, [note + probe_lines[0]],
-                adapter_error=err,
+                adapter_error=err, **meta,
             )
-        return UsageResult(provider.name, label, method, False, [note + probe_err])
+        return UsageResult(provider.name, label, method, False, [note + probe_err], **meta)
 
     lines, err = await _probe_chat(client, provider, key, timeout)
     method = f'minimal chat probe ("{_PROBE_INPUT}", max_tokens={_PROBE_MAX_TOKENS})'
@@ -501,8 +655,8 @@ async def check_key_usage(
             lines = lines + [
                 "team quota not queried: set organization/project on this key entry"
             ]
-        return UsageResult(provider.name, label, method, True, lines)
-    return UsageResult(provider.name, label, method, False, [err])
+        return UsageResult(provider.name, label, method, True, lines, **meta)
+    return UsageResult(provider.name, label, method, False, [err], **meta)
 
 
 async def _check_key_cached(
@@ -525,14 +679,15 @@ async def _check_key_cached(
     fp = _fingerprint(key)
     hit = view.get(fp)
     if hit is not None:
-        label = f"key #{index + 1} ({_mask_key(key)})"
-        if entry.note:
-            label += f" [{entry.note}]"
+        label = _key_label(index, key, entry.note)
         ok = bool(hit.get("ok"))
         lines = list(hit.get("lines") or [hit.get("error") or "unknown error"])
         age = _fmt_age(hit.get("failed_at", ""))
         method = f"cached ({age} ago)" if ok else f"cached failure ({age} ago)"
-        return UsageResult(provider.name, label, method, ok, lines + [FORCE_HINT], skipped=True), False
+        return UsageResult(
+            provider.name, label, method, ok, lines + [FORCE_HINT], skipped=True,
+            index=index, masked_key=_mask_key(key), note=entry.note,
+        ), False
     result = await check_key_usage(client, provider, entry, index, timeout)
     if is_placeholder_key(key):
         return result, False  # local config state, not a remote failure
@@ -584,3 +739,50 @@ def run_usage_check(
     config: GatewayConfig, timeout: float = 15.0, force: bool = False
 ) -> dict[str, list[UsageResult]]:
     return asyncio.run(check_all_usage(config, timeout, force=force))
+
+
+def result_to_dict(result: UsageResult, *, verbose: bool = False, now: float | None = None) -> dict:
+    """One UsageResult as a JSON-ready dict.
+
+    Semantics for missing platform data: an unknown remaining percent is
+    reported as 0.0; an unknown reset time yields null (no countdown active).
+    """
+    now = time.time() if now is None else now
+
+    def window(wq: WindowQuota | None) -> dict | None:
+        if wq is None:
+            return None
+        pct = wq.remaining_percent if wq.remaining_percent is not None else 0.0
+        out: dict = {
+            "remaining_percent": round(pct, 1),
+            "remaining_seconds": (
+                max(0, int(wq.reset_epoch - now)) if wq.reset_epoch is not None else None
+            ),
+            "reset_at": (
+                datetime.fromtimestamp(wq.reset_epoch).astimezone().isoformat(timespec="seconds")
+                if wq.reset_epoch is not None
+                else None
+            ),
+        }
+        if wq.window_hours is not None:
+            out["window_hours"] = wq.window_hours
+        if wq.used_text is not None:
+            out["used"] = wq.used_text
+        return out
+
+    quota = result.quota
+    payload: dict = {
+        "index": result.index + 1,
+        "key": result.masked_key,
+        "note": result.note or None,
+        "ok": result.ok,
+        "skipped": result.skipped,
+        "method": result.method,
+        "adapter_error": result.adapter_error,
+        "plan": quota.plan if quota else None,
+        "five_hour": window(quota.five_hour) if quota else None,
+        "weekly": window(quota.weekly) if quota else None,
+    }
+    if verbose:
+        payload["raw_lines"] = list(result.lines)
+    return payload

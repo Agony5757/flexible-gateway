@@ -80,8 +80,8 @@ def _systemctl(*args: str, capture: bool = False) -> subprocess.CompletedProcess
     )
 
 
-def _journalctl(*extra: str) -> list[str]:
-    return ["journalctl", "--user", "--unit", SERVICE_NAME, "--no-pager", "--output", "cat", *extra]
+def _journalctl(*extra: str, output: str = "cat") -> list[str]:
+    return ["journalctl", "--user", "--unit", SERVICE_NAME, "--no-pager", "--output", output, *extra]
 
 
 def _systemd_user_available() -> tuple[bool, str]:
@@ -1176,6 +1176,34 @@ def service_status() -> str | None:
     return config_path
 
 
+def service_status_info() -> dict:
+    """Structured service state for `service status --json` (no printing)."""
+    legacy = _inspect_legacy_runtime()
+    available, reason = _systemd_user_available()
+    enabled = None
+    if available:
+        enabled = _systemctl("is-enabled", SERVICE_NAME, capture=True).stdout.strip() or None
+    info: dict = {
+        "systemd_available": available,
+        "installed": service_installed(),
+        "active": _service_active() if available else False,
+        "enabled": enabled,
+        "unit": _unit_path(),
+        "config": _installed_config_path(),
+        "applied_endpoint": None,
+        "legacy": {
+            "gateway_pid": legacy.gateway_pid,
+            "guardian_pid": legacy.guardian_pid,
+        },
+    }
+    if not available:
+        info["systemd_reason"] = reason
+    state = _read_applied_state()
+    if state:
+        info["applied_endpoint"] = {"host": state.host, "port": state.port}
+    return info
+
+
 # Completion lines logged by server.py after each request:
 #   [schedule] model -> provider (model) | status | ms
 _ROUTE_LINE = re.compile(r"\[[^\]]+\] \S+ -> \S+ \([^)]+\) \| \d+ \| \d+ms$")
@@ -1187,6 +1215,7 @@ def service_log(
     follow: bool = False,
     grep: str | None = None,
     routes: bool = False,
+    as_json: bool = False,
 ) -> None:
     if shutil.which("journalctl") is None:
         err("journalctl not found — this feature requires systemd (Linux).")
@@ -1216,7 +1245,9 @@ def service_log(
         sys.exit(1)
 
     count = lines if lines is not None else (None if since else 50)
-    cmd = _journalctl()
+    # --json streams journalctl's native NDJSON (one object per entry);
+    # --grep/-r filtering then applies to each entry's MESSAGE field.
+    cmd = _journalctl(output="json" if as_json else "cat")
     if count is not None:
         cmd += ["--lines", str(count)]
     if since:
@@ -1226,10 +1257,18 @@ def service_log(
 
     needle = grep.lower() if grep else None
 
+    def message_of(line: str) -> str:
+        if not as_json:
+            return line
+        try:
+            return json.loads(line).get("MESSAGE", "")
+        except ValueError:
+            return line
+
     def emit(line: str) -> None:
-        if routes and not _ROUTE_LINE.search(line):
+        if routes and not _ROUTE_LINE.search(message_of(line)):
             return
-        if needle and needle not in line.lower():
+        if needle and needle not in message_of(line).lower():
             return
         print(line, flush=True)
 

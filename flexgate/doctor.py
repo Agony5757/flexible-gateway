@@ -210,7 +210,9 @@ def _check_claude_settings(config, findings: list[Finding]) -> None:
                                 f"— 'flexgate settings apply'"))
 
 
-def _check_upstream(config, findings: list[Finding], *, offline: bool, timeout: float) -> None:
+def _check_upstream(
+    config, findings: list[Finding], *, offline: bool, timeout: float, quiet: bool = False
+) -> None:
     if offline:
         findings.append(Finding(SKIP, "Upstream", "skipped (--offline)"))
         return
@@ -219,7 +221,8 @@ def _check_upstream(config, findings: list[Finding], *, offline: bool, timeout: 
 
     from flexgate.healthcheck import check_providers
 
-    print(dim(f"probing upstream providers (timeout {timeout:g}s)..."))
+    if not quiet:
+        print(dim(f"probing upstream providers (timeout {timeout:g}s)..."))
     for r in check_providers(config, timeout=timeout):
         if not r.ok:
             status = FAIL
@@ -234,9 +237,16 @@ def _check_upstream(config, findings: list[Finding], *, offline: bool, timeout: 
 _STATUS_COLOR = {OK: green, WARN: yellow, FAIL: red, SKIP: dim}
 
 
-def run_doctor(config_path: str, *, offline: bool = False, probe_timeout: float = 15.0) -> int:
-    print(bold("flexgate doctor")
-          + dim(f" — version {__version__}, config schema v{CURRENT_CONFIG_VERSION}") + "\n")
+def run_doctor(
+    config_path: str,
+    *,
+    offline: bool = False,
+    probe_timeout: float = 15.0,
+    as_json: bool = False,
+) -> int:
+    if not as_json:
+        print(bold("flexgate doctor")
+              + dim(f" — version {__version__}, config schema v{CURRENT_CONFIG_VERSION}") + "\n")
 
     findings: list[Finding] = []
     _check_python(findings)
@@ -248,8 +258,33 @@ def run_doctor(config_path: str, *, offline: bool = False, probe_timeout: float 
         _check_routes(config, findings)
         _check_port(config, findings)
         _check_claude_settings(config, findings)
-        _check_upstream(config, findings, offline=offline, timeout=probe_timeout)
+        _check_upstream(config, findings, offline=offline, timeout=probe_timeout, quiet=as_json)
     _check_systemd(findings)
+
+    fails = sum(1 for f in findings if f.status == FAIL)
+    warns = sum(1 for f in findings if f.status == WARN)
+    summary = {
+        "ok": sum(1 for f in findings if f.status == OK),
+        "warn": warns,
+        "fail": fails,
+        "skip": sum(1 for f in findings if f.status == SKIP),
+    }
+
+    if as_json:
+        from flexgate.ui import emit_json
+
+        emit_json({
+            "ok": fails == 0,
+            "version": __version__,
+            "config": config_path,
+            "offline": offline,
+            "findings": [
+                {"status": f.status, "label": f.label, "detail": f.detail}
+                for f in findings
+            ],
+            "summary": summary,
+        })
+        return 1 if fails else 0
 
     width = max(len(f.label) for f in findings)
     for f in findings:
@@ -259,8 +294,6 @@ def run_doctor(config_path: str, *, offline: bool = False, probe_timeout: float 
             line += f"  {dim(f.detail)}"
         print(line)
 
-    fails = sum(1 for f in findings if f.status == FAIL)
-    warns = sum(1 for f in findings if f.status == WARN)
     print()
     if fails:
         print(red(f"{fails} problem(s) must be fixed; {warns} warning(s)."))

@@ -1,7 +1,7 @@
 # 命令参考
 
 ```text
-usage: flexgate [-h] [--config CONFIG] [--version]
+usage: flexgate [-h] [--config CONFIG] [--version] [--json]
                 {service,run,check,status,usage,log,settings,sync,help,doctor,update,config} ...
 ```
 
@@ -10,6 +10,32 @@ usage: flexgate [-h] [--config CONFIG] [--version]
 - `--config PATH` 指定配置文件（默认 `~/.flexgate/config.yaml`）
 - `--port PORT` 覆盖配置文件中的端口（仅 `flexgate run`）
 - `--version` 打印版本号（`service status` / 裸 `flexgate` 也会显示）
+
+## `--json`：机器可读输出
+
+除 `run`（前台服务器，输出为日志流）、`config edit`（交互 TUI）和
+`help` 外，**所有数据型子命令都支持 `--json`**，输出结构化 JSON 而非
+人类可读文本（写在子命令之后，如 `flexgate usage --json`）。约定：
+
+- 成功：`{"ok": true, ...}`，退出码与人类模式一致（`doctor` 有 FAIL 时
+  仍为 1，此时 `ok` 为 `false`）。
+- 命令自身的已知失败：`{"ok": false, "error": "..."}` + 退出码 1。
+- key/凭证一律掩码输出，JSON 中永不出现明文。
+- 各命令的字段结构：
+
+| 命令 | 内容 |
+|------|------|
+| `usage --json [--verbose]` | 每个 key 的套餐名、5h/周窗口剩余百分比与重置倒计时（详见[用量查询](usage.md)） |
+| `status --json` | 版本、server、providers（掩码 key）、当前路由 + `usage` 字段（`--no-usage` 时缺省） |
+| `doctor --json` / `check --json` | `findings[]`（status/label/detail）与 `summary{ok,warn,fail,skip}`，退出码语义不变 |
+| `update --json [--check]` | 包版本/升级动作、配置 schema 迁移状态、服务 reload 结果与执行日志 |
+| `config show/path/init/set --json` | 配置全量（key 掩码）、路径、创建结果、路由变更 |
+| `settings import/apply --json` | 导入/应用结果（token 掩码；`apply --dry-run` 不写文件） |
+| `sync --json [--dry-run]` | 动作、服务器、文档、结果（pushed/bootstrapped/replaced）与备份路径 |
+| `service status --json` | systemd 状态（installed/active/enabled）、unit、配置、applied endpoint、legacy 进程、当前路由 |
+| `service install/uninstall/start/stop/restart/reload --json` | `{"ok", "action", "exit_code", "log": [原人类输出行]}` |
+| `log --json` | journalctl 原生 NDJSON（每行一个 JSON 对象，`-f` 流式；`--grep`/`-r` 过滤 MESSAGE 字段） |
+| 裸 `flexgate --json` | 版本、服务安装/运行状态、升级提示 |
 
 ## 服务管理（默认持久化模式）
 
@@ -51,13 +77,20 @@ flexgate service uninstall           # 停止、禁用并删除 unit
 ## 状态总览与用量查询
 
 ```bash
-flexgate status                  # providers + fallback 链 + 每个 key 的用量 + 当前路由
+flexgate status                  # providers + fallback 链 + 每个 key 的用量摘要 + 当前路由
 flexgate status --no-usage       # 跳过用量查询，只看配置
 flexgate status --usage-timeout 30
-flexgate usage                   # 只看每个 key 的用量/额度（不打印配置和路由）
+flexgate usage                   # 只看每个 key 的用量/额度（统一摘要）
 flexgate usage --usage-timeout 30
 flexgate usage --force           # 重查上次失败的 key（默认跳过，读缓存）
+flexgate usage --verbose         # 显示各适配器的原始明细（旧行为）
+flexgate usage --time-format hours  # 倒计时以小时计（dhm / hours / minutes）
 ```
+
+`usage`（及 `status` 的用量段）默认输出**统一摘要**：每个 key 一行的
+套餐名、5h 余额百分比、周余额百分比、5h 剩余时间、周用量剩余时间。
+平台未返回的 `?` 值按固定语义处理（余额 `?` → `0%`，重置时间 `?` →
+`—` 无倒计时）。字段、JSON 结构与 `?` 语义详见[用量查询](usage.md)。
 
 查询失败的 key 会被缓存并在此后的 `status` / `usage` 中默认跳过
 （显示为 `cached failure` 并附带提示），`--force` 强制重新查询；

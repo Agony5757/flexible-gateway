@@ -21,8 +21,11 @@ flexgate service install                    # install + enable + start systemd u
 # Lifecycle
 flexgate service {install|start|stop|restart|reload|status|uninstall}
 flexgate run                                # foreground/debug only
-flexgate status                             # providers, fallback chains, per-key usage, active routes
+flexgate status                             # providers, fallback chains, per-key usage summary, active routes
 flexgate usage [--force]                    # per-key usage/quota only; --force rechecks cached failures
+flexgate usage --verbose                    # raw per-adapter usage lines (pre-0.10 default)
+flexgate usage --time-format hours          # countdown units: dhm (default) / hours / minutes
+flexgate usage --json                       # structured JSON (most data commands support --json)
 flexgate log                                # service journal (-f follow, -r route lines only)
 
 # Config
@@ -87,12 +90,12 @@ OpenAI-style client → POST /v1/images/generations
 
 | File | Role |
 |------|------|
-| `cli.py` | argparse CLI; service lifecycle commands, foreground `run`, config/settings/sync commands, `flexgate log` journal viewer |
-| `ui.py` | Shared terminal styling: ANSI helpers (`bold`/`dim`/`red`/...), `ok`/`warn`/`fail`/`err` output helpers, `FlexgateHelpFormatter` + `FlexgateParser` (colored help on every Python version; all gated by `NO_COLOR` + stdout isatty) |
+| `cli.py` | argparse CLI; service lifecycle commands, foreground `run`, config/settings/sync commands, `flexgate log` journal viewer; unified usage-summary rendering (plan + 5h/weekly percent + reset countdown; `--verbose` for raw lines, `--time-format` units) and `--json` output for every data command (mutating service commands are wrapped so their human output lands in a `log` array) |
+| `ui.py` | Shared terminal styling: ANSI helpers (`bold`/`dim`/`red`/...), `ok`/`warn`/`fail`/`err` output helpers, `emit_json`/`json_fail` (`--json` convention `{"ok": ...}`), `FlexgateHelpFormatter` + `FlexgateParser` (colored help on every Python version; all gated by `NO_COLOR` + stdout isatty) |
 | `config.py` | Pydantic-like dataclasses (`GatewayConfig`, `ProviderConfig`, `RouteConfig`, `ScheduleEntry`), YAML load/save, `TIER_PATTERNS` regex map, `is_placeholder_key` |
 | `router.py` | `resolve(config, model)` — schedule-first then default routes, first regex match wins; model aliases normalized before matching |
 | `proxy.py` | `handle_request()` — httpx async proxy, per-key fallback retry loop, SSE streaming + JSON pass-through |
-| `usage.py` | `flexgate status` usage queries — per-platform adapters (MiniMax coding_plan API, Kimi Code usages API, z.ai quota API, zhipu team quota API, LiteLLM `/key/info`) plus a minimal chat probe fallback |
+| `usage.py` | `flexgate status` usage queries — per-platform adapters (MiniMax coding_plan API, Kimi Code usages API, z.ai quota API, zhipu team quota API, LiteLLM `/key/info`) plus a minimal chat probe fallback; every adapter also fills a normalized `QuotaInfo` (plan + 5h/weekly `WindowQuota`: remaining percent, reset epoch) used by the unified summary and `--json`; unreported platform data ("?") stays None → displayed as 0% / no countdown |
 | `server.py` | Starlette app creation, `POST /v1/messages` + `POST /v1/images/{generations,edits}` endpoints, `SIGUSR1` lifespan reload |
 | `images.py` | OpenAI Images API → MiniMax `/v1/image_generation` translation (`image-01`, size→width/height clamped to 512–2048 mult of 8, `data.image_base64[]`→`data[].b64_json`); edits endpoint returns 501; unknown image model names get 501 `model_not_supported` |
 | `fallback.py` | Catch-all route: merged Anthropic/OpenAI-shaped JSON errors for every unserved path — 404 `route_not_found` (lists valid routes), 405 `method_not_allowed`, 501 `endpoint_not_supported` per recognized API family with an actionable reason |

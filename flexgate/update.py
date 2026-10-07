@@ -122,43 +122,92 @@ def _config_status(config_path: str) -> tuple[int, list[int]] | None:
     return version, pending_steps(version)
 
 
-def run_update(config_path: str, *, check: bool = False, config_only: bool = False) -> int:
+def run_update(
+    config_path: str,
+    *,
+    check: bool = False,
+    config_only: bool = False,
+    as_json: bool = False,
+) -> int:
     import os
 
-    print(bold(f"flexgate {__version__}") + dim(f" (config schema v{CURRENT_CONFIG_VERSION})"))
+    report: dict = {
+        "installed": __version__,
+        "latest": None,
+        "package": None,
+        "config": None,
+        "reload": None,
+        "actions": [],
+        "log": [],
+    }
     failures = 0
     package_upgraded = False
 
+    def say(*texts) -> None:
+        if not as_json:
+            print(*texts)
+
+    def note(text: str) -> None:
+        report["log"].append(text)
+
+    def finish(code: int) -> int:
+        if as_json:
+            report["ok"] = code == 0
+            from flexgate.ui import emit_json
+            emit_json(report)
+        return code
+
+    if not as_json:
+        print(bold(f"flexgate {__version__}") + dim(f" (config schema v{CURRENT_CONFIG_VERSION})"))
+
     # ── package update ────────────────────────────────────────────
     latest = fetch_latest_version()
+    report["latest"] = latest
     if latest is None:
-        print("\n" + bold("Package:") + " could not reach PyPI — skipping package update check.")
+        say("\n" + bold("Package:") + " could not reach PyPI — skipping package update check.")
+        note("package check skipped: PyPI unreachable")
     else:
         newer = parse_version(latest) > parse_version(__version__)
-        print(f"\n{bold('Package:')} installed {__version__}, latest {latest}"
-              + (yellow(" — update available") if newer else green(" — up to date")))
+        say(f"\n{bold('Package:')} installed {__version__}, latest {latest}"
+            + (yellow(" — update available") if newer else green(" — up to date")))
+        report["package"] = {"update_available": newer, "upgraded": False}
         if newer and not config_only:
             installer = detect_installer()
             if installer is None:
-                print(red("  Could not detect how flexgate was installed; upgrade manually."))
+                say(red("  Could not detect how flexgate was installed; upgrade manually."))
+                note("could not detect installer")
                 failures += 1
             else:
                 label, cmd = installer
                 if check:
-                    print(f"  {dim('Would run:')} {' '.join(cmd)}")
+                    say(f"  {dim('Would run:')} {' '.join(cmd)}")
+                    report["actions"].append(
+                        {"stage": "package", "via": label, "command": cmd, "mode": "would-run"})
                 else:
-                    print(f"  Upgrading via {bold(label)}: {dim(' '.join(cmd))}")
-                    proc = subprocess.run(cmd)
+                    say(f"  Upgrading via {bold(label)}: {dim(' '.join(cmd))}")
+                    proc = subprocess.run(cmd, capture_output=as_json, text=True)
+                    if as_json:
+                        for stream in (proc.stdout, proc.stderr):
+                            if stream:
+                                report["log"].extend(
+                                    line for line in stream.splitlines() if line.strip())
                     if proc.returncode != 0:
-                        print(red(f"  Package upgrade failed (exit {proc.returncode})."))
+                        say(red(f"  Package upgrade failed (exit {proc.returncode})."))
+                        note(f"package upgrade failed (exit {proc.returncode})")
+                        report["package"]["error"] = f"exit {proc.returncode}"
                         failures += 1
                     else:
-                        ok(f"upgraded to {latest}. Restart the service to use it:")
-                        print(f"    {dim('flexgate service restart')}")
+                        if not as_json:
+                            ok(f"upgraded to {latest}. Restart the service to use it:")
+                            say(f"    {dim('flexgate service restart')}")
+                        note(f"upgraded to {latest}")
+                        report["package"]["upgraded"] = True
                         package_upgraded = True
+                    report["actions"].append(
+                        {"stage": "package", "via": label, "command": cmd, "mode": "ran"})
 
     # ── config migration ──────────────────────────────────────────
-    print()
+    say()
     if package_upgraded and not os.environ.get("FLEXGATE_UPDATE_DELEGATED"):
         # This process still runs the OLD code: its CURRENT_CONFIG_VERSION and
         # MIGRATIONS chain predate the release just installed, so an outdated
@@ -166,41 +215,74 @@ def run_update(config_path: str, *, check: bool = False, config_only: bool = Fal
         # right after upgrading to a v4 release). Hand the migration to the
         # new code in a fresh process. The env guard prevents re-delegation
         # if the upgrade somehow left an older version installed.
-        cmd = [sys.executable, "-m", "flexgate", "--config", config_path, "update", "--config-only"]
+        cmd = [sys.executable, "-m", "flexgate", "--config", config_path,
+               "update", "--config-only"]
+        if as_json:
+            cmd.append("--json")
         env = dict(os.environ, FLEXGATE_UPDATE_DELEGATED="1")
-        proc = subprocess.run(cmd, env=env)
-        return proc.returncode or (1 if failures else 0)
+        if as_json:
+            proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            child_payload = None
+            try:
+                child_payload = json.loads(proc.stdout)
+            except ValueError:
+                report["log"].extend(
+                    line for line in proc.stdout.splitlines() if line.strip())
+            if isinstance(child_payload, dict):
+                report["config"] = child_payload.get("config")
+                report["reload"] = child_payload.get("reload")
+                report["log"].extend(child_payload.get("log") or [])
+            code = proc.returncode
+        else:
+            code = subprocess.run(cmd, env=env).returncode
+        return finish(code or (1 if failures else 0))
 
     if not os.path.exists(config_path):
-        print(f"{bold('Config:')} {config_path} not found — nothing to migrate.")
-        return 1 if failures else 0
+        say(f"{bold('Config:')} {config_path} not found — nothing to migrate.")
+        report["config"] = {"error": f"{config_path} not found"}
+        return finish(1 if failures else 0)
 
     status = _config_status(config_path)
     if status is None:
-        print(red(f"Config: could not parse {config_path} — run 'flexgate doctor' for details."))
-        return 1
+        say(red(f"Config: could not parse {config_path} — run 'flexgate doctor' for details."))
+        report["config"] = {"error": f"could not parse {config_path}"}
+        return finish(1)
 
     version, steps = status
+    report["config"] = {
+        "version": version,
+        "current": CURRENT_CONFIG_VERSION,
+        "pending_steps": steps,
+        "migrated": False,
+        "backup": None,
+    }
     if not steps:
-        print(f"{bold('Config:')} schema v{version} is current — nothing to migrate.")
+        say(f"{bold('Config:')} schema v{version} is current — nothing to migrate.")
     else:
-        print(f"{bold('Config:')} schema v{version} → v{CURRENT_CONFIG_VERSION}, {len(steps)} migration(s) pending.")
+        say(f"{bold('Config:')} schema v{version} → v{CURRENT_CONFIG_VERSION}, {len(steps)} migration(s) pending.")
         if check:
             for step in steps:
-                print(f"  {dim(f'Would apply v{step} → v{step + 1}')}")
+                say(f"  {dim(f'Would apply v{step} → v{step + 1}')}")
         else:
             result = migrate_config_file(config_path)
             for line in result.applied:
-                ok(f"applied {dim(line)}")
+                if not as_json:
+                    ok(f"applied {dim(line)}")
+                note(f"applied {line}")
             if result.backup_path:
-                print(f"  Backup: {dim(result.backup_path)}")
-            ok(f"migrated {config_path}")
+                say(f"  Backup: {dim(result.backup_path)}")
+            report["config"]["backup"] = result.backup_path
+            report["config"]["migrated"] = True
+            if not as_json:
+                ok(f"migrated {config_path}")
+            note(f"migrated {config_path}")
 
     # ── reload the running service with the migrated config ──────
     if not check:
         from flexgate.service import reload_service_if_active
         msg = reload_service_if_active(config_path)
+        report["reload"] = msg
         if msg:
-            print(f"\n{msg}")
+            say(f"\n{msg}")
 
-    return 1 if failures else 0
+    return finish(1 if failures else 0)

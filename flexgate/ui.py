@@ -10,6 +10,7 @@ which is fine for the usual "both are the same terminal" case.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -45,6 +46,17 @@ def err(msg: str, exit_code: int | None = None) -> None:
     print(red(msg), file=sys.stderr)
     if exit_code is not None:
         sys.exit(exit_code)
+
+
+def emit_json(payload: dict) -> None:
+    """Print a machine-readable JSON payload (``--json`` output convention)."""
+    print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+
+
+def json_fail(msg: str, exit_code: int = 1) -> None:
+    """Emit a failed ``--json`` run as ``{"ok": false, "error": ...}`` and exit."""
+    emit_json({"ok": False, "error": msg})
+    sys.exit(exit_code)
 
 
 class FlexgateHelpFormatter(argparse.HelpFormatter):

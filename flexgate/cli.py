@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
+import json
 import os
 import sys
 
 import re
+
+import time
 
 try:
     import curses
@@ -30,14 +35,46 @@ from flexgate.ui import (
     bold as _bold,
     cyan as _cyan,
     dim as _dim,
+    emit_json as _emit_json,
     err,
     green as _green,
+    json_fail as _json_fail,
     ok as _ok,
     red as _red,
     yellow as _yellow,
 )
 
 PATTERN_TIERS = {v: k for k, v in TIER_PATTERNS.items()}
+
+
+# ── --json flag and output helpers ─────────────────────────────────
+
+
+def _add_json_flag(parser, help_text: str = "Output machine-readable JSON instead of human text") -> None:
+    # default=SUPPRESS keeps a bare root-level `--json` intact when a
+    # subparser (which shares the namespace) does not repeat the flag.
+    parser.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help=help_text)
+
+
+def _wants_json(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "json", False))
+
+
+def _format_duration(seconds: float, style: str) -> str:
+    """Countdown rendering: dhm ("4d 4h 23m"), hours ("52.1h") or minutes ("3125m")."""
+    total = max(0, int(round(seconds)))
+    if style == "minutes":
+        return f"{total // 60}m"
+    if style == "hours":
+        return f"{total / 3600:.1f}h"
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days}d {hours}h {minutes}m"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
 
 # ── run (foreground debugging) ─────────────────────────────────────
 
@@ -47,7 +84,8 @@ def _service_config_arg(args: argparse.Namespace) -> str | None:
     return None
 
 
-def _print_active_routes(config: GatewayConfig) -> None:
+def _active_routes(config: GatewayConfig) -> tuple[list[RouteConfig], str]:
+    """Routes in effect right now (schedule window first, else defaults) + label."""
     from datetime import datetime
 
     now = datetime.now()
@@ -71,7 +109,11 @@ def _print_active_routes(config: GatewayConfig) -> None:
 
     if active_routes is None:
         active_routes = config.routes
+    return active_routes, label
 
+
+def _print_active_routes(config: GatewayConfig) -> None:
+    active_routes, label = _active_routes(config)
     if not active_routes:
         return
 
@@ -79,15 +121,41 @@ def _print_active_routes(config: GatewayConfig) -> None:
     _print_route_table(active_routes)
 
 
+def _route_json(r: RouteConfig) -> dict:
+    return {
+        "pattern": r.pattern.pattern,
+        "tier": PATTERN_TIERS.get(r.pattern.pattern),
+        "provider": r.provider_name,
+        "model": r.model,
+        "active_key": r.key_index + 1,
+    }
+
+
+def _routes_json(config: GatewayConfig, *, active: bool = True) -> list[dict]:
+    routes, _label = _active_routes(config) if active else (config.routes, "default")
+    return [_route_json(r) for r in routes]
+
+
+def _provider_json(name: str, prov: ProviderConfig) -> dict:
+    return {
+        "name": name,
+        "base_url": prov.base_url,
+        "keys": [
+            {
+                "index": i + 1,
+                "key": _mask_key(k.key),
+                "note": k.note or None,
+                "organization": k.organization or None,
+                "project": k.project or None,
+            }
+            for i, k in enumerate(prov.api_keys)
+        ],
+        "models": list(prov.available_models),
+    }
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     run_server(args.config, args.port)
-
-
-def cmd_check(args: argparse.Namespace) -> None:
-    """Deprecated alias: upstream probing moved into `flexgate doctor`."""
-    print(_dim("'flexgate check' has moved to 'flexgate doctor' (upstream probing is now part of it)."))
-    print(_dim("Note: doctor also checks the local install, so its exit code can be 1 even when all upstreams are OK."))
-    cmd_doctor(args)
 
 
 # ── status (providers / fallback / usage / routes) ─────────────────
@@ -95,9 +163,16 @@ def cmd_check(args: argparse.Namespace) -> None:
 def cmd_status(args: argparse.Namespace) -> None:
     config_path = args.config
     if not os.path.exists(config_path):
-        err(f"Config not found: {config_path} — run 'flexgate config init' to create one.", 1)
+        message = f"Config not found: {config_path} — run 'flexgate config init' to create one."
+        if _wants_json(args):
+            _json_fail(message)
+        err(message, 1)
 
     config = load_config(config_path)
+
+    if _wants_json(args):
+        _emit_json(_status_json_payload(config, config_path, args))
+        return
 
     print(_bold(f"flexgate {__version__}"))
     print(f"  {_dim('config:')}  {os.path.abspath(config_path)}")
@@ -128,19 +203,141 @@ def cmd_status(args: argparse.Namespace) -> None:
     if getattr(args, "no_usage", False):
         return
 
-    _print_usage(config, getattr(args, "usage_timeout", 15.0))
+    _print_usage(
+        config,
+        getattr(args, "usage_timeout", 15.0),
+        verbose=getattr(args, "verbose", False),
+        time_format=getattr(args, "time_format", "dhm"),
+    )
+
+
+def _status_json_payload(config: GatewayConfig, config_path: str, args: argparse.Namespace) -> dict:
+    payload: dict = {
+        "ok": True,
+        "version": __version__,
+        "config": os.path.abspath(config_path),
+        "server": {"host": config.server.host, "port": config.server.port},
+        "providers": [_provider_json(name, prov) for name, prov in config.providers.items()],
+        "routes": _routes_json(config),
+    }
+    if not getattr(args, "no_usage", False):
+        from flexgate.usage import run_usage_check
+
+        timeout = getattr(args, "usage_timeout", 15.0)
+        usage = run_usage_check(config, timeout=timeout)
+        payload["usage"] = _usage_section_json(usage, timeout, verbose=getattr(args, "verbose", False))
+    return payload
 
 
 def cmd_usage(args: argparse.Namespace) -> None:
     config_path = args.config
     if not os.path.exists(config_path):
-        err(f"Config not found: {config_path} — run 'flexgate config init' to create one.", 1)
+        message = f"Config not found: {config_path} — run 'flexgate config init' to create one."
+        if _wants_json(args):
+            _json_fail(message)
+        err(message, 1)
 
     config = load_config(config_path)
-    _print_usage(config, getattr(args, "usage_timeout", 15.0), force=getattr(args, "force", False))
+    timeout = getattr(args, "usage_timeout", 15.0)
+    force = getattr(args, "force", False)
+    verbose = getattr(args, "verbose", False)
+
+    if _wants_json(args):
+        from flexgate.usage import run_usage_check
+
+        usage = run_usage_check(config, timeout=timeout, force=force)
+        payload = {
+            "ok": True,
+            "version": __version__,
+            "force": force,
+            **_usage_section_json(usage, timeout, verbose=verbose),
+        }
+        _emit_json(payload)
+        return
+
+    _print_usage(config, timeout, force=force, verbose=verbose,
+                 time_format=getattr(args, "time_format", "dhm"))
 
 
-def _print_usage(config, timeout: float, force: bool = False) -> None:
+def _usage_section_json(usage: dict, timeout: float, *, verbose: bool = False) -> dict:
+    """Shared usage payload for `usage --json` and `status --json`."""
+    from flexgate.usage import result_to_dict
+
+    now = time.time()
+    return {
+        "timeout": timeout,
+        "skipped": sum(1 for results in usage.values() for r in results if r.skipped),
+        "providers": [
+            {
+                "provider": name,
+                "keys": [result_to_dict(r, verbose=verbose, now=now) for r in results],
+            }
+            for name, results in usage.items()
+        ],
+    }
+
+
+def _usage_marker(r) -> str:
+    if r.skipped:
+        return _dim("✓") if r.ok else _dim("✗")
+    return _green("✓") if r.ok else _red("✗")
+
+
+def _pct_col(wq) -> str:
+    """Remaining percent, colored by urgency; unknown → 0% (platform "?")."""
+    value = wq.remaining_percent if (wq is not None and wq.remaining_percent is not None) else 0.0
+    text = f"{value:.0f}%"
+    if value <= 10:
+        return _red(text)
+    if value <= 25:
+        return _yellow(text)
+    return text
+
+
+def _dur_col(wq, time_format: str, now: float) -> str:
+    """Time until the window resets; unknown reset → "—" (no countdown)."""
+    if wq is None or wq.reset_epoch is None:
+        return "—"
+    return _format_duration(wq.reset_epoch - now, time_format)
+
+
+def _print_usage_summary(usage: dict, time_format: str) -> None:
+    """Unified view: plan, 5h %, weekly %, 5h/weekly reset countdown per key."""
+    now = time.time()
+    for name, results in usage.items():
+        print(f"  {_bold(_cyan(name))}")
+        rows = []  # (result, key, plan|None, five, weekly, detail|None)
+        for r in results:
+            key = f"#{r.index + 1} {r.masked_key}" + (f" [{r.note}]" if r.note else "")
+            quota = r.quota
+            if quota is not None and (quota.plan or quota.five_hour or quota.weekly):
+                rows.append((r, key, quota.plan or "—", quota.five_hour, quota.weekly, None))
+            else:
+                detail = r.method if r.ok else (r.lines[0] if r.lines else r.method)
+                rows.append((r, key, None, None, None, detail))
+        key_w = max(len(row[1]) for row in rows)
+        plan_w = max((len(row[2]) for row in rows if row[2] is not None), default=0)
+        for r, key, plan, five, weekly, detail in rows:
+            marker = _usage_marker(r)
+            if plan is not None:
+                line = f"    {marker} {key.ljust(key_w)}  {_dim('plan')} {plan.ljust(plan_w)}"
+                for label, wq in (("5h", five), ("weekly", weekly)):
+                    if wq is None:
+                        line += f"   {label} —"
+                    else:
+                        line += f"   {label} {_pct_col(wq)} · {_dur_col(wq, time_format, now)}"
+                print(line)
+            else:
+                print(f"    {marker} {key.ljust(key_w)}  {_dim(detail)}")
+
+
+def _print_usage(
+    config,
+    timeout: float,
+    force: bool = False,
+    verbose: bool = False,
+    time_format: str = "dhm",
+) -> None:
     from flexgate.usage import FORCE_HINT, run_usage_check
 
     print("\n" + _bold("Usage") + _dim(f" (timeout {timeout:g}s per key)"))
@@ -148,13 +345,20 @@ def _print_usage(config, timeout: float, force: bool = False) -> None:
     skipped = sum(1 for results in usage.values() for r in results if r.skipped)
     if skipped:
         print(_dim(f"  {skipped} key(s) skipped — last check failed ({FORCE_HINT})"))
+    if verbose:
+        _print_usage_verbose(usage)
+    else:
+        _print_usage_summary(usage, time_format)
+
+
+def _print_usage_verbose(usage: dict) -> None:
+    """Original per-adapter detail lines (`--verbose`)."""
+    from flexgate.usage import FORCE_HINT
+
     for name, results in usage.items():
         print(f"  {_bold(_cyan(name))}")
         for r in results:
-            if r.skipped:
-                marker = _dim("✓") if r.ok else _dim("✗")
-            else:
-                marker = _green("✓") if r.ok else _red("✗")
+            marker = _usage_marker(r)
             print(f"    {marker} {r.key_label}  {_dim(r.method)}")
             for line in r.lines:
                 if line == FORCE_HINT:
@@ -167,12 +371,12 @@ def _print_usage(config, timeout: float, force: bool = False) -> None:
 
 def cmd_settings_import(args: argparse.Namespace) -> None:
     from flexgate.settings import settings_import
-    settings_import(args.config)
+    settings_import(args.config, as_json=_wants_json(args))
 
 
 def cmd_settings_apply(args: argparse.Namespace) -> None:
     from flexgate.settings import settings_apply
-    settings_apply(args.config, dry_run=getattr(args, "dry_run", False))
+    settings_apply(args.config, dry_run=getattr(args, "dry_run", False), as_json=_wants_json(args))
 
 
 # ── sync subcommand ────────────────────────────────────────────────
@@ -181,11 +385,12 @@ def cmd_sync(args: argparse.Namespace) -> None:
     from flexgate.sync import sync_pull, sync_push
     action = getattr(args, "action", None) or "pull"
     if action == "push":
-        sync_push(args.config)
+        sync_push(args.config, as_json=_wants_json(args))
     else:
         sync_pull(
             args.config,
             dry_run=getattr(args, "dry_run", False),
+            as_json=_wants_json(args),
         )
 
 
@@ -250,23 +455,50 @@ def _signal_reload(config_path: str) -> str | None:
     return reload_service_if_active(config_path)
 
 
-def _hot_reload(config_path: str) -> None:
-    """Ask the active systemd service to reload its config."""
-    msg = _signal_reload(config_path)
-    if msg:
-        print(msg)
-
-
 def cmd_config_init(args: argparse.Namespace) -> None:
     config_path = args.config
-    if os.path.exists(config_path):
-        print(_yellow(f"Config already exists: {config_path}"))
+    created = not os.path.exists(config_path)
+    if not created:
+        if _wants_json(args):
+            _emit_json({"ok": True, "path": config_path, "created": False})
+        else:
+            print(_yellow(f"Config already exists: {config_path}"))
         return
     with open(config_path, "w") as f:
         f.write(f"config_version: {CURRENT_CONFIG_VERSION}\n\n")
         f.write(DEFAULT_CONFIG_TEMPLATE)
+    if _wants_json(args):
+        _emit_json({"ok": True, "path": config_path, "created": True})
+        return
     _ok(f"created {config_path}")
     print(_dim("Edit the file to add your API keys and providers."))
+
+
+def _config_json(config: GatewayConfig) -> dict:
+    def hhmm(minutes: int) -> str:
+        return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+    return {
+        "config_version": CURRENT_CONFIG_VERSION,
+        "server": {"host": config.server.host, "port": config.server.port},
+        "providers": [_provider_json(name, prov) for name, prov in config.providers.items()],
+        "routes": [_route_json(r) for r in config.routes],
+        "schedule": [
+            {
+                "name": e.name,
+                "start": hhmm(e.start_minutes),
+                "end": hhmm(e.end_minutes),
+                "routes": [_route_json(r) for r in e.routes],
+            }
+            for e in config.schedule
+        ],
+        "claude_settings": {
+            "default_opus_model": config.claude_settings.default_opus_model,
+            "default_sonnet_model": config.claude_settings.default_sonnet_model,
+            "default_haiku_model": config.claude_settings.default_haiku_model,
+            "api_timeout_ms": config.claude_settings.api_timeout_ms,
+        },
+    }
 
 
 def cmd_config_show(args: argparse.Namespace) -> None:
@@ -274,10 +506,17 @@ def cmd_config_show(args: argparse.Namespace) -> None:
 
     config_path = args.config
     if not os.path.exists(config_path):
-        err(f"Config not found: {config_path} — run 'flexgate config init' to create one.")
+        message = f"Config not found: {config_path} — run 'flexgate config init' to create one."
+        if _wants_json(args):
+            _json_fail(message)
+        err(message, 1)
         return
 
     config = load_config(config_path)
+
+    if _wants_json(args):
+        _emit_json({"ok": True, "path": os.path.abspath(config_path), **_config_json(config)})
+        return
 
     print(f"{_dim('Config:')} {os.path.abspath(config_path)}")
     print(f"{_dim('Server:')} {_cyan(f'{config.server.host}:{config.server.port}')}")
@@ -313,6 +552,13 @@ def cmd_config_show(args: argparse.Namespace) -> None:
 
 
 def cmd_config_set(args: argparse.Namespace) -> None:
+    json_mode = _wants_json(args)
+
+    def fail(message: str) -> None:
+        if json_mode:
+            _json_fail(message)
+        err(message, 1)
+
     tier = args.tier.lower()
     target = args.target
     model_arg = args.model
@@ -324,10 +570,9 @@ def cmd_config_set(args: argparse.Namespace) -> None:
         unknown = [t for t in tiers if t not in TIER_PATTERNS]
         if not tiers or unknown:
             bad = unknown[0] if unknown else tier
-            err(
+            fail(
                 f"Unknown tier '{bad}'. Available: all, {', '.join(TIER_PATTERNS)}.\n"
-                "Combine multiple tiers with commas, e.g. opus,sonnet",
-                1,
+                "Combine multiple tiers with commas, e.g. opus,sonnet"
             )
         # De-duplicate while preserving order
         seen_tiers: set[str] = set()
@@ -336,7 +581,7 @@ def cmd_config_set(args: argparse.Namespace) -> None:
     config_path = args.config
 
     if not os.path.exists(config_path):
-        err(f"Config not found: {config_path} — run 'flexgate config init' first.", 1)
+        fail(f"Config not found: {config_path} — run 'flexgate config init' first.")
 
     config = load_config(config_path)
 
@@ -349,9 +594,8 @@ def cmd_config_set(args: argparse.Namespace) -> None:
     else:
         if model_arg is not None:
             # model arg given but target isn't a known provider
-            err(
-                f"Provider '{target}' not found. Known providers: {', '.join(config.providers)}",
-                1,
+            fail(
+                f"Provider '{target}' not found. Known providers: {', '.join(config.providers)}"
             )
 
         # Try to resolve target as a model name from existing routes
@@ -371,41 +615,37 @@ def cmd_config_set(args: argparse.Namespace) -> None:
         if len(matches) == 1:
             provider_name, model_override = matches[0]
         elif len(matches) > 1:
-            err(
+            fail(
                 f"Ambiguous: '{target}' found in multiple providers:\n  "
                 + "\n  ".join(
                     f"flexgate config set {tier} {prov} {mdl}"
                     for prov, mdl in sorted(matches)
-                ),
-                1,
+                )
             )
         else:
             known_models = sorted({r.model for r in all_routes if r.model})
             detail = f"Known providers: {', '.join(config.providers)}"
             if known_models:
                 detail += f"\nKnown models: {', '.join(known_models)}"
-            err(
+            fail(
                 f"Unknown target '{target}' — not a known provider or model name.\n"
                 f"{detail}\n"
-                f"Usage: flexgate config set {tier} <provider> [model]",
-                1,
+                f"Usage: flexgate config set {tier} <provider> [model]"
             )
 
     if provider_name not in config.providers:
-        err(
+        fail(
             f"Provider '{provider_name}' not found in config. "
             f"Known providers: {', '.join(config.providers)}\n"
-            f"Add it to {config_path} first (base_url and api_key required).",
-            1,
+            f"Add it to {config_path} first (base_url and api_key required)."
         )
 
     provider = config.providers[provider_name]
     if model_override is None and not provider.available_models:
-        err(
+        fail(
             f"Provider '{provider_name}' has no 'available_models' to fall back to.\n"
             f"Either add 'available_models' to provider '{provider_name}' in {config_path},\n"
-            f"or specify a model: flexgate config set {tier} {provider_name} <model>",
-            1,
+            f"or specify a model: flexgate config set {tier} {provider_name} <model>"
         )
 
     # Update existing route or insert new one for each target tier
@@ -413,6 +653,28 @@ def cmd_config_set(args: argparse.Namespace) -> None:
         _set_route(config, TIER_PATTERNS[tier_name], provider_name, model_override)
 
     save_config(config, config_path)
+
+    effective_model = model_override or (
+        provider.available_models[0] if provider.available_models else None
+    )
+    reload_msg = _signal_reload(config_path)
+
+    if json_mode:
+        _emit_json({
+            "ok": True,
+            "config": config_path,
+            "changed": [
+                {
+                    "tier": t,
+                    "pattern": TIER_PATTERNS[t],
+                    "provider": provider_name,
+                    "model": effective_model,
+                }
+                for t in tiers
+            ],
+            "reload": reload_msg,
+        })
+        return
 
     display = provider_name
     if model_override:
@@ -424,10 +686,14 @@ def cmd_config_set(args: argparse.Namespace) -> None:
     print(f"{_dim('Saved:')} {config_path}")
 
     # Hot-reload the authoritative systemd service, if it is active.
-    _hot_reload(config_path)
+    if reload_msg:
+        print(reload_msg)
 
 
 def cmd_config_path(args: argparse.Namespace) -> None:
+    if _wants_json(args):
+        _emit_json({"ok": True, "path": args.config})
+        return
     print(args.config)
 
 
@@ -842,42 +1108,93 @@ def cmd_config_edit(args: argparse.Namespace) -> None:
 
 # ── service subcommands ────────────────────────────────────────────
 
+def _service_action_json(action: str, fn, *args, **kwargs) -> None:
+    """Run a mutating service command, then report it as JSON.
+
+    The underlying functions print human progress and exit via SystemExit on
+    failure; both are captured into ``log`` so the only stdout is the JSON.
+    """
+    buf = io.StringIO()
+    code = 0
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        try:
+            fn(*args, **kwargs)
+        except SystemExit as e:
+            code = e.code if isinstance(e.code, int) else (1 if e.code else 0)
+        except KeyboardInterrupt:  # pragma: no cover - user abort mid-action
+            code = 130
+    log = [line for line in buf.getvalue().splitlines() if line.strip()]
+    _emit_json({"ok": code == 0, "action": action, "exit_code": code, "log": log})
+    if code:
+        sys.exit(code)
+
+
 def cmd_service_install(args: argparse.Namespace) -> None:
     from flexgate.service import service_install
-    service_install(
-        _service_config_arg(args),
+    kwargs = dict(
         start=not getattr(args, "no_start", False),
         no_claude_settings=getattr(args, "no_claude_settings", False),
     )
+    if _wants_json(args):
+        _service_action_json("install", service_install, _service_config_arg(args), **kwargs)
+        return
+    service_install(_service_config_arg(args), **kwargs)
 
 
 def cmd_service_uninstall(args: argparse.Namespace) -> None:
     from flexgate.service import service_uninstall
+    if _wants_json(args):
+        _service_action_json("uninstall", service_uninstall)
+        return
     service_uninstall()
 
 
 def cmd_service_start(args: argparse.Namespace) -> None:
     from flexgate.service import service_start
+    if _wants_json(args):
+        _service_action_json("start", service_start, _service_config_arg(args))
+        return
     service_start(_service_config_arg(args))
 
 
 def cmd_service_stop(args: argparse.Namespace) -> None:
     from flexgate.service import service_stop
+    if _wants_json(args):
+        _service_action_json("stop", service_stop)
+        return
     service_stop()
 
 
 def cmd_service_restart(args: argparse.Namespace) -> None:
     from flexgate.service import service_restart
+    if _wants_json(args):
+        _service_action_json("restart", service_restart, _service_config_arg(args))
+        return
     service_restart(_service_config_arg(args))
 
 
 def cmd_service_reload(args: argparse.Namespace) -> None:
     from flexgate.service import service_reload
+    if _wants_json(args):
+        _service_action_json("reload", service_reload)
+        return
     service_reload()
 
 
 def cmd_service_status(args: argparse.Namespace) -> None:
-    from flexgate.service import service_status
+    from flexgate.service import service_status, service_status_info
+
+    if _wants_json(args):
+        info = service_status_info()
+        routes = None
+        try:
+            config = load_config(info.get("config") or args.config)
+            routes = _routes_json(config)
+        except Exception:
+            pass
+        _emit_json({"ok": True, "version": __version__, **info, "routes": routes})
+        return
+
     print(_bold(f"flexgate {__version__}"))
     config_path = service_status() or args.config
     try:
@@ -926,6 +1243,7 @@ def cmd_log(args: argparse.Namespace) -> None:
         follow=args.follow,
         grep=args.grep,
         routes=args.routes,
+        as_json=_wants_json(args),
     )
 
 
@@ -937,7 +1255,16 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         args.config,
         offline=getattr(args, "offline", False),
         probe_timeout=getattr(args, "verify_timeout", 15.0),
+        as_json=_wants_json(args),
     ))
+
+
+def cmd_check(args: argparse.Namespace) -> None:
+    """Deprecated alias: upstream probing moved into `flexgate doctor`."""
+    if not _wants_json(args):
+        print(_dim("'flexgate check' has moved to 'flexgate doctor' (upstream probing is now part of it)."))
+        print(_dim("Note: doctor also checks the local install, so its exit code can be 1 even when all upstreams are OK."))
+    cmd_doctor(args)
 
 
 def cmd_update(args: argparse.Namespace) -> None:
@@ -946,6 +1273,7 @@ def cmd_update(args: argparse.Namespace) -> None:
         args.config,
         check=getattr(args, "check", False),
         config_only=getattr(args, "config_only", False),
+        as_json=_wants_json(args),
     ))
 
 
@@ -961,6 +1289,17 @@ def cmd_default(args: argparse.Namespace) -> None:
     from flexgate.service import service_active, service_installed, service_status
 
     config_path = args.config
+
+    if _wants_json(args):
+        from flexgate.update import update_notice
+
+        _emit_json({
+            "ok": True,
+            "version": __version__,
+            "service": {"installed": service_installed(), "active": service_active()},
+            "update_notice": update_notice(),
+        })
+        return
 
     print(_bold(f"flexgate {__version__}"))
     _print_update_notice()
@@ -1006,6 +1345,11 @@ def main() -> None:
     )
     parser.add_argument("--config", default=None, help="Config file (default: ~/.flexgate/config.yaml)")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    _add_json_flag(
+        parser,
+        help_text="JSON output for the bare 'flexgate' summary "
+                  "(subcommands take their own --json, e.g. 'flexgate usage --json')",
+    )
 
     sub = parser.add_subparsers(dest="group")
 
@@ -1032,12 +1376,17 @@ def main() -> None:
         "--no-claude-settings", action="store_true",
         help="Skip the interactive prompt to overwrite ~/.claude/settings.json"
     )
-    svc_sub.add_parser("uninstall", help="Stop, disable and remove the systemd user service")
-    svc_sub.add_parser("start", help="Start the service")
-    svc_sub.add_parser("stop", help="Stop the service")
-    svc_sub.add_parser("restart", help="Restart the service")
-    svc_sub.add_parser("reload", help="Reload config without restarting")
-    svc_sub.add_parser("status", help="Show service status and active routes")
+    _add_json_flag(svc_install)
+    for name, help_text in (
+        ("uninstall", "Stop, disable and remove the systemd user service"),
+        ("start", "Start the service"),
+        ("stop", "Stop the service"),
+        ("restart", "Restart the service"),
+        ("reload", "Reload config without restarting"),
+        ("status", "Show service status and active routes"),
+    ):
+        leaf = svc_sub.add_parser(name, help=help_text)
+        _add_json_flag(leaf)
     svc_sub.add_parser("help", help="Show service command help")
 
     # flexgate run / check (foreground debugging) ...
@@ -1056,6 +1405,7 @@ def main() -> None:
         "--verify-timeout", type=float, default=15.0,
         help=argparse.SUPPRESS,
     )
+    _add_json_flag(check_p)
 
     # flexgate status ...
     status_p = sub.add_parser(
@@ -1070,6 +1420,15 @@ def main() -> None:
         "--usage-timeout", type=float, default=15.0,
         help="Per-key usage query timeout in seconds (default: 15.0)"
     )
+    status_p.add_argument(
+        "--verbose", action="store_true",
+        help="Show the raw per-adapter usage lines instead of the unified summary"
+    )
+    status_p.add_argument(
+        "--time-format", choices=("dhm", "hours", "minutes"), default="dhm",
+        help="Countdown format in the usage summary: dhm='4d 4h 23m', hours='52.1h', minutes='3125m'"
+    )
+    _add_json_flag(status_p)
 
     usage_p = sub.add_parser(
         "usage",
@@ -1083,6 +1442,15 @@ def main() -> None:
         "--force", action="store_true",
         help="Recheck keys whose last usage check failed (skipped by default)"
     )
+    usage_p.add_argument(
+        "--verbose", action="store_true",
+        help="Show the raw per-adapter usage lines instead of the unified summary"
+    )
+    usage_p.add_argument(
+        "--time-format", choices=("dhm", "hours", "minutes"), default="dhm",
+        help="Countdown format: dhm='4d 4h 23m', hours='52.1h', minutes='3125m'"
+    )
+    _add_json_flag(usage_p)
 
     # flexgate log ...
     log_p = sub.add_parser("log", help="Show gateway logs from the systemd journal")
@@ -1106,11 +1474,13 @@ def main() -> None:
         "-r", "--routes", action="store_true",
         help="Show only route lines: [schedule] model -> provider (model) | status | ms"
     )
+    _add_json_flag(log_p)
 
     # flexgate settings ...
     st = sub.add_parser("settings", help="Manage Claude Code settings")
     st_sub = st.add_subparsers(dest="command")
-    st_sub.add_parser("import", help="Import ~/.claude/settings.json* into config.yaml")
+    st_import = st_sub.add_parser("import", help="Import ~/.claude/settings.json* into config.yaml")
+    _add_json_flag(st_import)
     apply_p = st_sub.add_parser(
         "apply",
         help="Apply config.yaml env to ~/.claude/settings.json (non-destructive: other fields are preserved)",
@@ -1119,6 +1489,7 @@ def main() -> None:
         "--dry-run", action="store_true",
         help="Show the env changes without writing settings.json"
     )
+    _add_json_flag(apply_p)
 
     # flexgate sync ...
     sy = sub.add_parser("sync", help="Sync config.yaml with a confsync server (default: pull)")
@@ -1130,6 +1501,7 @@ def main() -> None:
         "--dry-run", action="store_true",
         help="Show what would change without writing the config"
     )
+    _add_json_flag(sy)
 
     # flexgate help ...
     sub.add_parser("help", help="Show help, including confsync sync details")
@@ -1147,6 +1519,7 @@ def main() -> None:
         "--verify-timeout", type=float, default=15.0,
         help="Per-provider upstream probe timeout in seconds (default: 15.0)"
     )
+    _add_json_flag(doc_p)
     up_p = sub.add_parser("update", help="Upgrade flexgate (pip) and migrate the config schema")
     up_p.add_argument(
         "--check", action="store_true",
@@ -1156,18 +1529,23 @@ def main() -> None:
         "--config-only", action="store_true",
         help="Only migrate the config schema; skip the package upgrade"
     )
+    _add_json_flag(up_p)
 
     # flexgate config ...
     cf = sub.add_parser("config", help="View and manage configuration")
     cf_sub = cf.add_subparsers(dest="command")
-    cf_sub.add_parser("init", help="Create default config at ~/.flexgate/config.yaml")
-    cf_sub.add_parser("show", help="Show current configuration")
-    cf_sub.add_parser("path", help="Print config file path")
+    cf_init = cf_sub.add_parser("init", help="Create default config at ~/.flexgate/config.yaml")
+    _add_json_flag(cf_init)
+    cf_show = cf_sub.add_parser("show", help="Show current configuration")
+    _add_json_flag(cf_show)
+    cf_path = cf_sub.add_parser("path", help="Print config file path")
+    _add_json_flag(cf_path)
     cf_sub.add_parser("edit", help="Interactively choose provider/model per tier (opus/sonnet/haiku)")
     cf_set = cf_sub.add_parser("set", help="Set route for a tier")
     cf_set.add_argument("tier", help="Tier: all, or comma-separated opus,sonnet,haiku")
     cf_set.add_argument("target", help="Provider name or model name")
     cf_set.add_argument("model", nargs="?", default=None, help="Model override (when target is a provider)")
+    _add_json_flag(cf_set)
 
     args = parser.parse_args()
 
