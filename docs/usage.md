@@ -15,6 +15,7 @@
 | z.ai 个人版（api.z.ai） | `GET /api/monitor/usage/quota/limit`（Authorization 直接带 key） | 未公开文档、但 z.ai 官方 coding 插件在用的接口，返回各窗口已用百分比与重置时间。**仅对 GLM Coding Plan 个人订阅有效**：按量付费 key 会返回"当前用户不存在coding plan"并退化为 probe |
 | 智谱团队版（open.bigmodel.cn） | `GET /api/monitor/usage/quota/limit?type=2`，带 `bigmodel-organization`/`bigmodel-project` 头（取自 key 条目的 `organization`/`project` 字段） | 同一 monitor 接口的团队版变体，返回 5 小时/每周窗口的积分用量（绝对值 + 百分比 + 重置时间）；另查 `querySubscribeDetail` 显示套餐名与有效期。**key 条目未配 `organization`/`project` 时不查询**，退化为 probe（团队 key 不适用个人版接口） |
 | USTC（api.llm.ustc.edu.cn，LiteLLM） | `GET /key/info`（Bearer 认证） | LiteLLM proxy 自带的 key 信息接口，返回 spend / max_budget / 限速等 |
+| DeepSeek（api.deepseek.com） | `GET /user/balance`（Bearer 认证） | 官方文档接口，返回预付费账户余额（总额 = 充值余额 + 未过期赠金，按 CNY/USD 分别列出）；查询本身不消耗余额。余额不属于窗口配额，统一摘要中只显示方法名，具体金额见 `--verbose` / `--json --verbose` |
 | 小米 MiMo（token-plan-cn.xiaomimimo.com） | **无 key 可用的官方接口**（控制台内部接口需要浏览器 cookie，不采用） | 退化为 minimal probe |
 | 其他/未知平台 | minimal chat probe | 发一条输入 `"hi"`、`max_tokens=128` 的最小 `/v1/messages` 请求，验证 key 是否还能正常服务（会消耗极少量额度） |
 
@@ -43,7 +44,8 @@ Usage (timeout 15s per key)
   - `dhm`（默认）：`4d 4h 23m` / `2h 47m` / `23m`
   - `hours`：`52.1h`
   - `minutes`：`3125m`
-- 无配额接口的 key（probe / 缓存失败）只显示一行方法或错误摘要。
+- 无窗口配额的 key（probe / 缓存失败 / 仅余额型接口如 DeepSeek、LiteLLM）
+  只显示一行方法或错误摘要。
 
 ### "?" 值的语义
 

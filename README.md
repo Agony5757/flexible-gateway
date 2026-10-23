@@ -185,6 +185,7 @@ Usage (timeout 15s per key)
 | Kimi Code（api.kimi.com） | `GET {base}/v1/usages`（Bearer 认证，复用 provider key） | 未公开文档、与 Kimi Code CLI `/usage` 相同的接口，返回周配额、5 小时滚动窗口剩余量和并发上限 |
 | z.ai / 智谱（api.z.ai / open.bigmodel.cn） | `GET /api/monitor/usage/quota/limit`（Authorization 直接带 key） | 未公开文档、但 z.ai 官方 coding 插件在用的接口，返回各窗口已用百分比与重置时间 |
 | USTC（api.llm.ustc.edu.cn，LiteLLM） | `GET /key/info`（Bearer 认证） | LiteLLM proxy 自带的 key 信息接口，返回 spend / max_budget / 限速等 |
+| DeepSeek（api.deepseek.com） | `GET /user/balance`（Bearer 认证） | 官方文档接口，返回预付费账户余额（总额 = 充值余额 + 未过期赠金，CNY/USD）；查询不消耗余额，明细见 `flexgate usage --verbose` |
 | 小米 MiMo（token-plan-cn.xiaomimimo.com） | **无 key 可用的官方接口**（控制台内部接口需要浏览器 cookie，不采用） | 退化为 minimal probe |
 | 其他/未知平台 | minimal chat probe | 发一条输入 `"hi"`、`max_tokens=128` 的最小 `/v1/messages` 请求，验证 key 是否还能正常服务（会消耗极少量额度） |
 

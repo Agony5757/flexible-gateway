@@ -20,6 +20,11 @@ known adapter and queries it with the provider's own API key:
               subscription detail for the plan name/expiry; keys without
               both fields cannot be queried and get the plain probe
 * LiteLLM   → GET {origin}/key/info   (e.g. USTC api.llm.ustc.edu.cn)
+* DeepSeek  → GET {origin}/user/balance
+              (officially documented endpoint; reports the prepaid
+              pay-as-you-go balance — topped-up plus granted — per
+              currency. A balance is not a windowed quota, so like
+              LiteLLM it stays in the raw lines only)
 * anything else (e.g. Xiaomi MiMo, which has no key-based usage API)
             → minimal chat probe: POST /v1/messages with input "hi" and
               max_tokens=128 to verify the key can still serve requests
@@ -483,6 +488,29 @@ async def _usage_litellm(
     return lines or ["key valid (no quota fields exposed)"], None, None
 
 
+async def _usage_deepseek(
+    client: httpx.AsyncClient, provider: ProviderConfig, entry: ApiKey, timeout: float
+) -> tuple[list[str], QuotaInfo | None, str | None]:
+    key = entry.key
+    url = f"{_origin(provider.base_url)}/user/balance"
+    headers = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
+    data, err = await _get_json(client, url, headers, timeout)
+    if err:
+        return [], None, err
+    lines: list[str] = []
+    if not data.get("is_available"):
+        lines.append("NO balance available for API calls")
+    for info in data.get("balance_infos", []):
+        if not isinstance(info, dict):
+            continue
+        lines.append(
+            f"balance {info.get('total_balance', '?')} {info.get('currency', '?')} "
+            f"(topped-up {info.get('topped_up_balance', '?')}, "
+            f"granted {info.get('granted_balance', '?')})"
+        )
+    return lines or ["no balance data"], None, None
+
+
 async def _usage_kimi(
     client: httpx.AsyncClient, provider: ProviderConfig, entry: ApiKey, timeout: float
 ) -> tuple[list[str], QuotaInfo | None, str | None]:
@@ -550,6 +578,7 @@ _ADAPTERS = [
     ("z.ai", _usage_zai, "z.ai quota API (unofficial)"),
     ("bigmodel.cn", _usage_zhipu_team, "zhipu team quota API (unofficial)"),
     ("llm.ustc.edu.cn", _usage_litellm, "LiteLLM /key/info"),
+    ("api.deepseek.com", _usage_deepseek, "DeepSeek balance API"),
 ]
 
 # Platforms known to have NO key-based usage API — go straight to the probe.
