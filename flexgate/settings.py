@@ -80,6 +80,8 @@ def _infer_provider_name(base_url: str) -> str:
     url_lower = base_url.lower()
     if "z.ai" in url_lower:
         return "zai"
+    if "bigmodel" in url_lower:
+        return "zhipu"
     if "minimax" in url_lower:
         return "minimax"
     if "openai" in url_lower:

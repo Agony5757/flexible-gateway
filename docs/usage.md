@@ -6,14 +6,15 @@
 `--verbose` 才显示各适配器的原始明细。
 
 各平台的查询方式差异很大（有的平台根本没有可用的接口），flexgate 按
-`base_url` 自动选择适配器：
+`base_url` 自动选择适配器；GLM 平台（z.ai / bigmodel.cn）还结合 key 条目
+是否配置 `organization`/`project` 区分个人版和团队版：
 
 | 平台 | 查询方式 | 说明 |
 |------|----------|------|
 | MiniMax（api.minimaxi.com / api.minimax.io） | `GET /v1/api/openplatform/coding_plan/remains`（Bearer 认证，复用 provider key） | 官方 token plan 接口，返回 5 小时窗口和周窗口的**剩余**次数（注意响应里 `*_usage_count` 字段实际是剩余量） |
 | Kimi Code（api.kimi.com） | `GET {base}/v1/usages`（Bearer 认证，复用 provider key） | 未公开文档、与 Kimi Code CLI `/usage` 相同的接口，返回周配额、5 小时滚动窗口剩余量和并发上限 |
-| z.ai 个人版（api.z.ai） | `GET /api/monitor/usage/quota/limit`（Authorization 直接带 key） | 未公开文档、但 z.ai 官方 coding 插件在用的接口，返回各窗口已用百分比与重置时间。**仅对 GLM Coding Plan 个人订阅有效**：按量付费 key 会返回"当前用户不存在coding plan"并退化为 probe |
-| 智谱团队版（open.bigmodel.cn） | `GET /api/monitor/usage/quota/limit?type=2`，带 `bigmodel-organization`/`bigmodel-project` 头（取自 key 条目的 `organization`/`project` 字段） | 同一 monitor 接口的团队版变体，返回 5 小时/每周窗口的积分用量（绝对值 + 百分比 + 重置时间）；另查 `querySubscribeDetail` 显示套餐名与有效期。**key 条目未配 `organization`/`project` 时不查询**，退化为 probe（团队 key 不适用个人版接口） |
+| GLM 个人版（api.z.ai / open.bigmodel.cn） | `GET /api/monitor/usage/quota/limit`（Authorization 直接带 key） | 未公开文档、但 z.ai 官方 coding 插件在用的接口，返回各窗口已用百分比与重置时间。z.ai 和智谱（bigmodel.cn）是同一账号体系，**两个端点都响应**此接口。仅对 GLM Coding Plan 个人订阅有效：按量付费 key 或团队 key 会返回"当前用户不存在coding plan"并退化为 probe（团队 key 需在条目上配 `organization`/`project`） |
+| GLM 团队版（api.z.ai / open.bigmodel.cn） | `GET /api/monitor/usage/quota/limit?type=2`，带 `bigmodel-organization`/`bigmodel-project` 头（取自 key 条目的 `organization`/`project` 字段） | 同一 monitor 接口的团队版变体，返回 5 小时/每周窗口的积分用量（绝对值 + 百分比 + 重置时间）；另查 `querySubscribeDetail` 显示套餐名与有效期。**两个端点都响应**；key 条目未配 `organization`/`project` 时按个人版 key 处理 |
 | USTC（api.llm.ustc.edu.cn，LiteLLM） | `GET /key/info`（Bearer 认证） | LiteLLM proxy 自带的 key 信息接口，返回 spend / max_budget / 限速等 |
 | DeepSeek（api.deepseek.com） | `GET /user/balance`（Bearer 认证） | 官方文档接口，返回预付费账户余额（总额 = 充值余额 + 未过期赠金，按 CNY/USD 分别列出）；查询本身不消耗余额。余额不属于窗口配额，统一摘要中只显示方法名，具体金额见 `--verbose` / `--json --verbose` |
 | 小米 MiMo（token-plan-cn.xiaomimimo.com） | **无 key 可用的官方接口**（控制台内部接口需要浏览器 cookie，不采用） | 退化为 minimal probe |
@@ -37,7 +38,7 @@ Usage (timeout 15s per key)
     ✗ #1 sk-G***jJYg  LiteLLM /key/info failed (ConnectError: ); probe: ConnectError:
 ```
 
-- **plan**：套餐名（z.ai 的 pro/max、智谱团队的套餐名、Kimi 的会员等级）；
+- **plan**：套餐名（GLM 个人版的 pro/max、GLM 团队版的套餐名、Kimi 的会员等级）；
   平台不提供时显示 `—`。
 - **5h / weekly 百分比**：窗口**剩余**百分比（≤25% 黄色、≤10% 红色）。
 - **倒计时**：距窗口重置的剩余时间。`--time-format` 控制格式：
@@ -127,8 +128,9 @@ Usage (timeout 15s per key)
 ## 查询失败缓存与 `--force`
 
 用量查询中**报错的 key**（彻底失败，或专用接口报错但 probe 证明 key 仍
-可用）会记录到 `~/.flexgate/usage-cache.json`（只存 key 的 sha256 指纹和
-结果文本，不存 key 明文），此后 `flexgate status` / `flexgate usage`
+可用）会记录到 `~/.flexgate/usage-cache.json`（只存按 `base_url` 作用域
+的 sha256 指纹和结果文本，不存 key 明文——同一把 key 配在多个端点
+provider 下时缓存互不影响），此后 `flexgate status` / `flexgate usage`
 默认**跳过**这些 key——不再发起任何网络请求，直接显示缓存的错误和一行
 提示：
 
@@ -137,7 +139,7 @@ Usage (timeout 15s per key)
   2 key(s) skipped — last check failed (recheck with: flexgate usage --force)
   zai
     ✓ key #1 (9f2c***abCD)  cached (15s ago)
-        z.ai quota API (unofficial) failed (platform error: 当前用户不存在coding plan); probe: key can serve glm-5.3
+        z.ai coding-plan quota API (unofficial) failed (platform error: 当前用户不存在coding plan); probe: key can serve glm-5.3
         recheck with: flexgate usage --force
   ustc
     ✗ key #1 (sk-G***jJYg)  cached failure (8s ago)
@@ -153,8 +155,9 @@ Usage (timeout 15s per key)
 
 ## 新增平台适配器
 
-适配器登记在 `flexgate/usage.py` 的 `_ADAPTERS` 列表中：每条是
-`(url 子串, 适配器协程, 方法标签)`，首个命中生效。bigmodel.cn 的团队版
-适配器额外要求 key 条目上配置 `organization`/`project`，否则视为无适配
-接口。已知没有 key 可用接口的平台放入 `_PROBE_ONLY_MARKERS`，直接走
-probe，避免浪费一次失败的 HTTP 请求。
+平台适配器登记在 `flexgate/usage.py` 的 `_ADAPTERS` 列表中：每条是
+`(url 子串, 适配器协程, 方法标签)`，首个命中生效。GLM（z.ai /
+bigmodel.cn）单独登记在 `_GLM_MARKERS`：按 key 条目是否配置
+`organization`/`project` 选择个人版（`_usage_glm_personal`）或团队版
+（`_usage_glm_team`）适配器，两个端点共用。已知没有 key 可用接口的平台
+放入 `_PROBE_ONLY_MARKERS`，直接走 probe，避免浪费一次失败的 HTTP 请求。

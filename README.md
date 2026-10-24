@@ -138,7 +138,7 @@ Trusted Publisher（repo: `Agony5757/flexible-gateway`，workflow: `release.yml`
 
 - DNS / TCP / TLS 不可达（`base_url` 写错、网络不通）
 - API key 无效或过期（HTTP 401 / 403）
-- 仍是默认占位符（如 `your-zai-api-key`）
+- 仍是默认占位符（如 `your-glm-personal-api-key`）
 - Provider 侧 5xx 故障
 
 可通过 `--verify-timeout N` 调整每个 provider 的超时时间（默认 15 秒），
@@ -177,13 +177,15 @@ Usage (timeout 15s per key)
 时间 `?` → `—`（无倒计时，窗口未计数）。`--verbose` 显示原始明细；
 `--json` 输出结构化数据（见下）。
 
-各平台的用量查询方式差异很大，flexgate 按 `base_url` 自动选择适配器：
+各平台的用量查询方式差异很大，flexgate 按 `base_url` 自动选择适配器
+（GLM 平台还按 key 条目是否配置 `organization`/`project` 区分个人版/团队版）：
 
 | 平台 | 查询方式 | 说明 |
 |------|----------|------|
 | MiniMax（api.minimaxi.com / api.minimax.io） | `GET /v1/api/openplatform/coding_plan/remains`（Bearer 认证，复用 provider key） | 官方 token plan 接口，返回 5 小时窗口和周窗口的**剩余**次数（注意响应里 `*_usage_count` 字段实际是剩余量） |
 | Kimi Code（api.kimi.com） | `GET {base}/v1/usages`（Bearer 认证，复用 provider key） | 未公开文档、与 Kimi Code CLI `/usage` 相同的接口，返回周配额、5 小时滚动窗口剩余量和并发上限 |
-| z.ai / 智谱（api.z.ai / open.bigmodel.cn） | `GET /api/monitor/usage/quota/limit`（Authorization 直接带 key） | 未公开文档、但 z.ai 官方 coding 插件在用的接口，返回各窗口已用百分比与重置时间 |
+| GLM 个人版（api.z.ai / open.bigmodel.cn） | `GET /api/monitor/usage/quota/limit`（Authorization 直接带 key） | 未公开文档、但 z.ai 官方 coding 插件在用的接口，返回各窗口已用百分比与重置时间。z.ai 和智谱是同一账号体系，**两个端点都响应**；仅对个人版 coding plan 订阅有效，按量付费 key 退化为 probe |
+| GLM 团队版（api.z.ai / open.bigmodel.cn） | `GET /api/monitor/usage/quota/limit?type=2`，带 `bigmodel-organization`/`bigmodel-project` 头（取自 key 条目的 `organization`/`project` 字段） | 同一接口的团队版变体，返回 5 小时/每周窗口的积分用量；另查 `querySubscribeDetail` 显示套餐名与有效期，**两个端点都响应** |
 | USTC（api.llm.ustc.edu.cn，LiteLLM） | `GET /key/info`（Bearer 认证） | LiteLLM proxy 自带的 key 信息接口，返回 spend / max_budget / 限速等 |
 | DeepSeek（api.deepseek.com） | `GET /user/balance`（Bearer 认证） | 官方文档接口，返回预付费账户余额（总额 = 充值余额 + 未过期赠金，CNY/USD）；查询不消耗余额，明细见 `flexgate usage --verbose` |
 | 小米 MiMo（token-plan-cn.xiaomimimo.com） | **无 key 可用的官方接口**（控制台内部接口需要浏览器 cookie，不采用） | 退化为 minimal probe |
@@ -334,10 +336,10 @@ server:
   port: 8765
 
 providers:
-  zai:
+  zai:                            # GLM 个人版 key，走 z.ai 端点
     base_url: "https://api.z.ai/api/anthropic"
     api_keys:
-      - "your-zai-api-key"
+      - "your-glm-personal-api-key"
   minimax:
     base_url: "https://api.minimaxi.com/anthropic"
     api_keys:                   # 同一上游可配多个 key，互为 fallback
@@ -346,13 +348,24 @@ providers:
       - key: "your-minimax-api-key-2"
         note: "备用账号"
       - "your-minimax-api-key-3"   # 纯字符串写法（无备注）
-  zhipu-team:
+  zhipu:                          # 同一把 GLM 个人版 key 也可走智谱端点（同一账号体系）
     base_url: "https://open.bigmodel.cn/api/anthropic"
     api_keys:
-      - key: "your-zhipu-team-api-key"
+      - "your-glm-personal-api-key"
+  zhipu-team:                     # GLM 团队版 key
+    base_url: "https://open.bigmodel.cn/api/anthropic"
+    api_keys:
+      - key: "your-glm-team-api-key"
         note: "队友名"
-        organization: "org-XXXXXXXX"  # 智谱团队版 key：组织/项目 ID
+        organization: "org-XXXXXXXX"  # GLM 团队版 key：组织/项目 ID
         project: "proj_XXXXXXXX"      # （flexgate usage 查团队套餐额度用）
+  zai-team:                       # 团队版 key 同样可用于 z.ai 端点
+    base_url: "https://api.z.ai/api/anthropic"
+    api_keys:
+      - key: "your-glm-team-api-key"
+        note: "队友名"
+        organization: "org-XXXXXXXX"
+        project: "proj_XXXXXXXX"
 
 claude_settings:
   default_opus_model: "claude-opus-4-7"
@@ -426,10 +439,11 @@ routes:                          # 从上到下匹配，首个命中生效
 - 每次切换都会在服务日志中留下记录（key 只显示前后各 4 位）。
 - 用 `flexgate status` 可以查看每个 provider 的 fallback 链和每个 key 的
   实时用量。
-- 智谱 GLM Coding Plan **团队版** key 在条目上配 `organization`/`project`
+- GLM Coding Plan **团队版** key 在条目上配 `organization`/`project`
   （团队组织/项目 ID）后，`flexgate status`/`usage` 会用团队版接口查询
-  套餐名、有效期和 5 小时/每周积分窗口；未配置这两个字段的 key 只做
-  连通性探测。
+  套餐名、有效期和 5 小时/每周积分窗口；未配置这两个字段的 key 按个人版
+  coding plan key 查询（z.ai 和智谱两个端点同属一个账号体系，个人版与
+  团队版接口在两个端点上都可用）。
 - 旧版 `api_key` + `fallback_keys` 写法仍然兼容，`flexgate update` 会
   自动迁移为 `api_keys` 列表（config_version 3 → 4）。
 
@@ -438,7 +452,7 @@ routes:                          # 从上到下匹配，首个命中生效
 `flexgate settings import` 会扫描 `~/.claude/settings.json*`，从每个文件中提取 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN`，自动写入 config.yaml 的 providers 部分。
 
 文件名与 provider 名称的映射规则：
-- `settings.json` → 根据域名自动推断（如含 `z.ai` → `zai`）
+- `settings.json` → 根据域名自动推断（如含 `z.ai` → `zai`、含 `bigmodel` → `zhipu`）
 - `settings.json.zai` → provider 名 `zai`
 - `settings.json.minimax` → provider 名 `minimax`
 - `settings.json.bak.*` → 跳过（备份文件）

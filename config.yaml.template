@@ -8,9 +8,10 @@ server:
 # 日志都会显示）。某个 key 遇到 401/402/403/429/5xx/529 或连接错误（如额度
 # 用尽、平台过载）时，按顺序自动切换到下一个 key 重试。同一上游的多个账号
 # 应这样配置，而不是拆成多个 provider。
-# 智谱 GLM Coding Plan 团队版 key 还需在 key 条目上配置 organization 和
+# GLM Coding Plan 团队版 key 还需在 key 条目上配置 organization 和
 # project（团队组织/项目 ID，从团队用量页的浏览器请求头里一次性获取）；
-# flexgate usage 依赖这两个字段查询团队套餐额度，未配置则只做连通性探测。
+# flexgate usage 依赖这两个字段查询团队套餐额度，未配置则按个人版
+# coding plan key 查询。
 providers:
   minimax:
     base_url: "https://api.minimaxi.com/anthropic"
@@ -22,20 +23,40 @@ providers:
       - "your-minimax-api-key-3"   # 纯字符串写法（无备注）
     available_models:
       - "MiniMax-M3"
+  # GLM Coding Plan：z.ai（api.z.ai）和智谱（open.bigmodel.cn）是同一账号
+  # 体系，同一把 key 在两个端点都可用，因此同一把 key 可以同时配在 zai 和
+  # zhipu 两个 provider 下（例如留一个备用端点）。provider 按端点选择；
+  # usage 检查按 key 条目区分：未配 organization/project 的是个人版
+  # coding plan key，配了的是团队版 key。
   zai:
     base_url: "https://api.z.ai/api/anthropic"
     api_keys:
-      - "your-zai-api-key"
+      - "your-glm-personal-api-key"
     available_models:
       - "glm-5.3"      # 路由省略 model 时的回退模型
       - "glm-4.6v"
+  zai-team:
+    base_url: "https://api.z.ai/api/anthropic"
+    api_keys:
+      - key: "your-glm-team-api-key"
+        note: "队友名"
+        organization: "org-XXXXXXXX"    # GLM 团队版：组织 ID
+        project: "proj_XXXXXXXX"        # GLM 团队版：项目 ID
+    available_models:
+      - "glm-5.3"
+  zhipu:
+    base_url: "https://open.bigmodel.cn/api/anthropic"
+    api_keys:
+      - "your-glm-personal-api-key"
+    available_models:
+      - "glm-5.3"
   zhipu-team:
     base_url: "https://open.bigmodel.cn/api/anthropic"
     api_keys:
-      - key: "your-zhipu-team-api-key"
+      - key: "your-glm-team-api-key"
         note: "队友名"
-        organization: "org-XXXXXXXX"    # 智谱团队版：组织 ID
-        project: "proj_XXXXXXXX"        # 智谱团队版：项目 ID
+        organization: "org-XXXXXXXX"    # GLM 团队版：组织 ID
+        project: "proj_XXXXXXXX"        # GLM 团队版：项目 ID
     available_models:
       - "glm-5.3"
   xiaomi:

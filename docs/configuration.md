@@ -25,10 +25,10 @@ server:
   port: 8765
 
 providers:
-  zai:
+  zai:                            # GLM 个人版 key，走 z.ai 端点
     base_url: "https://api.z.ai/api/anthropic"
     api_keys:
-      - "your-zai-api-key"
+      - "your-glm-personal-api-key"
   minimax:
     base_url: "https://api.minimaxi.com/anthropic"
     api_keys:                   # 同一上游可配多个 key，互为 fallback
@@ -37,13 +37,24 @@ providers:
       - key: "your-minimax-api-key-2"
         note: "备用账号"
       - "your-minimax-api-key-3"   # 纯字符串写法（无备注）
-  zhipu-team:
+  zhipu:                          # 同一把 GLM 个人版 key 也可走智谱端点（同一账号体系）
     base_url: "https://open.bigmodel.cn/api/anthropic"
     api_keys:
-      - key: "your-zhipu-team-api-key"
+      - "your-glm-personal-api-key"
+  zhipu-team:                     # GLM 团队版 key
+    base_url: "https://open.bigmodel.cn/api/anthropic"
+    api_keys:
+      - key: "your-glm-team-api-key"
         note: "队友名"
-        organization: "org-XXXXXXXX"  # 智谱团队版 key：组织/项目 ID
+        organization: "org-XXXXXXXX"  # GLM 团队版 key：组织/项目 ID
         project: "proj_XXXXXXXX"      # （flexgate usage 查团队套餐额度用）
+  zai-team:                       # 团队版 key 同样可用于 z.ai 端点
+    base_url: "https://api.z.ai/api/anthropic"
+    api_keys:
+      - key: "your-glm-team-api-key"
+        note: "队友名"
+        organization: "org-XXXXXXXX"
+        project: "proj_XXXXXXXX"
 
 claude_settings:
   default_opus_model: "claude-opus-4-7"
@@ -83,7 +94,7 @@ routes:                          # 从上到下匹配，首个命中生效
 |------|------|
 | `server.host/port` | 网关监听地址 |
 | `providers.<name>.base_url` | Provider 的 API 地址 |
-| `providers.<name>.api_keys` | API key 列表（一个或多个，互为 fallback）；每项为 key 字符串或 `{key, note}`（`note` 是备注）。智谱团队版 key 还可加 `organization`/`project`（团队组织/项目 ID），供 `flexgate usage` 查询团队套餐额度 |
+| `providers.<name>.api_keys` | API key 列表（一个或多个，互为 fallback）；每项为 key 字符串或 `{key, note}`（`note` 是备注）。GLM 团队版 key 还可加 `organization`/`project`（团队组织/项目 ID），供 `flexgate usage` 查询团队套餐额度；未配置时按个人版 coding plan key 处理 |
 | `providers.<name>.available_models` | 该 provider 的可用模型列表，首个条目作为路由省略 `model` 时的回退模型 |
 | `claude_settings.*` | 写入 settings.json 的模型和超时配置 |
 | `routes[].pattern` | 正则匹配请求中的 model 字段 |

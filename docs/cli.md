@@ -127,7 +127,7 @@ flexgate log -f -r               # 实时观察每个请求被路由到哪个 pr
 
 - DNS / TCP / TLS 不可达（`base_url` 写错、网络不通）
 - API key 无效或过期（HTTP 401 / 403）
-- 仍是默认占位符（如 `your-zai-api-key`）
+- 仍是默认占位符（如 `your-glm-personal-api-key`）
 - Provider 侧 5xx 故障
 
 可通过 `--verify-timeout N` 调整每个 provider 的探测超时（默认 15 秒）；
@@ -230,7 +230,7 @@ flexgate settings apply --dry-run  # 预览将要修改的 env 键，不写文�
 providers：provider 已存在时**追加**到它的 `api_keys` 列表（已存在同一把
 key 则跳过），不存在则新建。文件名与 provider 名称的映射规则：
 
-- `settings.json` → 根据域名自动推断（如含 `z.ai` → `zai`）
+- `settings.json` → 根据域名自动推断（如含 `z.ai` → `zai`、含 `bigmodel` → `zhipu`）
 - `settings.json.zai` → provider 名 `zai`
 - `settings.json.bak.*` → 跳过（备份文件）
 

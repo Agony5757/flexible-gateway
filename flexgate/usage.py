@@ -1,8 +1,9 @@
 """Per-provider usage / quota inspection.
 
 Every provider platform exposes a different way to check remaining quota
-(and some expose none at all). This module maps a provider's base_url to a
-known adapter and queries it with the provider's own API key:
+(and some expose none at all). This module maps a provider's base_url —
+and, for GLM plans, the key entry's team fields — to a known adapter and
+queries it with the provider's own API key:
 
 * MiniMax   → GET {origin}/v1/api/openplatform/coding_plan/remains
               (officially documented token-plan endpoint; reports per-quota
@@ -12,13 +13,18 @@ known adapter and queries it with the provider's own API key:
 * Kimi Code → GET {base}/v1/usages
               (undocumented endpoint used by Kimi Code CLI's /usage;
               returns weekly quota, 5-hour window and parallel limit)
-* z.ai      → GET {origin}/api/monitor/usage/quota/limit
-              (undocumented but used by z.ai's own coding plugin)
-* zhipu team→ GET {origin}/api/monitor/usage/quota/limit?type=2 with
-              bigmodel-organization/bigmodel-project headers taken from the
-              key entry's organization/project fields, plus the team
-              subscription detail for the plan name/expiry; keys without
-              both fields cannot be queried and get the plain probe
+* GLM plans → z.ai (api.z.ai) and zhipu (open.bigmodel.cn) share one
+              account system — the same keys work on both endpoints, so
+              the adapter is picked per key entry:
+              - personal coding-plan key (entry has no organization/
+                project) → GET {origin}/api/monitor/usage/quota/limit
+                (undocumented but used by z.ai's own coding plugin;
+                served by both endpoints)
+              - team key (entry sets organization/project) → the same
+                endpoint with ?type=2 plus bigmodel-organization/
+                bigmodel-project headers, and the team subscription
+                detail for the plan name/expiry (also served by both
+                endpoints)
 * LiteLLM   → GET {origin}/key/info   (e.g. USTC api.llm.ustc.edu.cn)
 * DeepSeek  → GET {origin}/user/balance
               (officially documented endpoint; reports the prepaid
@@ -123,9 +129,12 @@ def _key_label(index: int, key: str, note: str) -> str:
 # ── failure cache ────────────────────────────────────────────────────
 
 
-def _fingerprint(key: str) -> str:
-    """Stable identity for a key — the cache never stores key material."""
-    return hashlib.sha256(key.encode()).hexdigest()[:16]
+def _fingerprint(base_url: str, key: str) -> str:
+    """Stable identity for one key on one upstream endpoint — the cache
+    never stores key material. Scoped by base_url so the same key listed
+    under two providers (e.g. zai and zhipu, which share an account
+    system) keeps separate cache entries."""
+    return hashlib.sha256(f"{base_url}|{key}".encode()).hexdigest()[:16]
 
 
 def _load_fail_cache() -> dict[str, dict]:
@@ -330,7 +339,7 @@ async def _usage_minimax(
     return (lines or ["plan active (no text-model quota data)"]), quota, None
 
 
-async def _usage_zai(
+async def _usage_glm_personal(
     client: httpx.AsyncClient, provider: ProviderConfig, entry: ApiKey, timeout: float
 ) -> tuple[list[str], QuotaInfo | None, str | None]:
     key = entry.key
@@ -375,7 +384,7 @@ async def _usage_zai(
     return lines or ["no quota data"], quota, None
 
 
-def _zhipu_team_headers(entry: ApiKey) -> dict[str, str]:
+def _glm_team_headers(entry: ApiKey) -> dict[str, str]:
     return {
         "Authorization": entry.key,
         "Content-Type": "application/json",
@@ -384,19 +393,19 @@ def _zhipu_team_headers(entry: ApiKey) -> dict[str, str]:
     }
 
 
-async def _zhipu_team_detail(
+async def _glm_team_detail(
     client: httpx.AsyncClient, provider: ProviderConfig, entry: ApiKey, timeout: float
 ) -> dict | None:
     """Best-effort team subscription detail (productName, expiry, auto-renew)."""
     url = f"{_origin(provider.base_url)}/api/biz/team/subscribe/product/querySubscribeDetail"
-    data, err = await _get_json(client, url, _zhipu_team_headers(entry), timeout)
+    data, err = await _get_json(client, url, _glm_team_headers(entry), timeout)
     if err or not data.get("success", False):
         return None
     detail = data.get("data") or {}
     return detail if detail.get("productName") else None
 
 
-def _zhipu_team_plan_line(detail: dict) -> str:
+def _glm_team_plan_line(detail: dict) -> str:
     line = f"plan: {detail.get('productName')}"
     end = detail.get("subscribeEndTime")
     if end:
@@ -407,11 +416,11 @@ def _zhipu_team_plan_line(detail: dict) -> str:
     return line
 
 
-async def _usage_zhipu_team(
+async def _usage_glm_team(
     client: httpx.AsyncClient, provider: ProviderConfig, entry: ApiKey, timeout: float
 ) -> tuple[list[str], QuotaInfo | None, str | None]:
     url = f"{_origin(provider.base_url)}/api/monitor/usage/quota/limit?type=2"
-    data, err = await _get_json(client, url, _zhipu_team_headers(entry), timeout)
+    data, err = await _get_json(client, url, _glm_team_headers(entry), timeout)
     if err:
         return [], None, err
     if not data.get("success", False):
@@ -424,10 +433,10 @@ async def _usage_zhipu_team(
         return [], None, "empty limits — key is not a member of the configured organization/project"
     lines: list[str] = []
     quota = QuotaInfo()
-    detail = await _zhipu_team_detail(client, provider, entry, timeout)
+    detail = await _glm_team_detail(client, provider, entry, timeout)
     if detail:
         quota.plan = detail.get("productName")
-        lines.append(_zhipu_team_plan_line(detail))
+        lines.append(_glm_team_plan_line(detail))
     for limit in limits:
         if not isinstance(limit, dict):
             continue
@@ -575,33 +584,35 @@ _ADAPTERS = [
     ("minimaxi.com", _usage_minimax, "MiniMax coding_plan API"),
     ("minimax.io", _usage_minimax, "MiniMax coding_plan API"),
     ("api.kimi.com", _usage_kimi, "Kimi Code usages API (unofficial)"),
-    ("z.ai", _usage_zai, "z.ai quota API (unofficial)"),
-    ("bigmodel.cn", _usage_zhipu_team, "zhipu team quota API (unofficial)"),
     ("llm.ustc.edu.cn", _usage_litellm, "LiteLLM /key/info"),
     ("api.deepseek.com", _usage_deepseek, "DeepSeek balance API"),
 ]
 
+# GLM coding plans: z.ai and zhipu (bigmodel.cn) share one account system —
+# the same keys serve both endpoints. (url substring, platform label)
+_GLM_MARKERS = (("z.ai", "z.ai"), ("bigmodel.cn", "zhipu"))
+
 # Platforms known to have NO key-based usage API — go straight to the probe.
 _PROBE_ONLY_MARKERS = ("xiaomimimo.com",)
-
-# bigmodel.cn marker, reused to explain why a key got no quota adapter.
-_ZHIPU_MARKER = "bigmodel.cn"
 
 
 def _find_adapter(base_url: str, entry: ApiKey):
     """First matching adapter for a base_url. Returns (adapter, label).
 
-    A bigmodel.cn (zhipu) team key whose entry lacks organization/project has
-    no quota endpoint to query — the personal coding-plan endpoint does not
-    apply to team keys — so it returns (None, None) and falls through to the
-    availability probe.
+    GLM keys (z.ai / bigmodel.cn) pick their adapter by key type: an entry
+    with organization/project set is a *team* key and gets the team quota
+    endpoint (?type=2 plus bigmodel-* headers); otherwise it is a personal
+    coding-plan key and gets the personal quota endpoint, which both
+    endpoints serve.
     """
     for marker, adapter, label in _ADAPTERS:
-        if marker not in base_url:
-            continue
-        if adapter is _usage_zhipu_team and not (entry.organization and entry.project):
-            return None, None
-        return adapter, label
+        if marker in base_url:
+            return adapter, label
+    for marker, platform in _GLM_MARKERS:
+        if marker in base_url:
+            if entry.organization and entry.project:
+                return _usage_glm_team, f"{platform} team quota API (unofficial)"
+            return _usage_glm_personal, f"{platform} coding-plan quota API (unofficial)"
     return None, None
 
 
@@ -680,10 +691,6 @@ async def check_key_usage(
     lines, err = await _probe_chat(client, provider, key, timeout)
     method = f'minimal chat probe ("{_PROBE_INPUT}", max_tokens={_PROBE_MAX_TOKENS})'
     if err is None:
-        if _ZHIPU_MARKER in provider.base_url and not (entry.organization and entry.project):
-            lines = lines + [
-                "team quota not queried: set organization/project on this key entry"
-            ]
         return UsageResult(provider.name, label, method, True, lines, **meta)
     return UsageResult(provider.name, label, method, False, [err], **meta)
 
@@ -705,7 +712,7 @@ async def _check_key_cached(
     and skipped next time. Returns (result, cache_changed).
     """
     key = entry.key
-    fp = _fingerprint(key)
+    fp = _fingerprint(provider.base_url, key)
     hit = view.get(fp)
     if hit is not None:
         label = _key_label(index, key, entry.note)

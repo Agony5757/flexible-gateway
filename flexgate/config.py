@@ -37,9 +37,10 @@ def is_placeholder_key(key: str) -> bool:
 class ApiKey:
     """One API key for a provider, with an optional human-readable note.
 
-    ``organization``/``project`` identify the team a zhipu (bigmodel.cn)
-    GLM Coding Plan *team* key belongs to; the usage check passes them as the
-    bigmodel-organization/bigmodel-project headers of the team quota query.
+    ``organization``/``project`` identify the team a GLM Coding Plan *team*
+    key belongs to (the z.ai and bigmodel.cn endpoints share one account
+    system); the usage check passes them as the bigmodel-organization/
+    bigmodel-project headers of the team quota query.
     """
     key: str
     note: str = ""
@@ -131,7 +132,7 @@ def _parse_api_keys(name: str, prov: dict) -> list[ApiKey]:
     Current schema: ``api_keys`` — a list whose entries are either a plain
     key string or a mapping ``{key: ..., note: ..., organization: ...,
     project: ...}`` (``note`` free-form; ``organization``/``project`` are the
-    zhipu team IDs used by the usage check). The legacy schema
+    GLM team IDs used by the usage check). The legacy schema
     (``api_key`` plus optional ``fallback_keys``) is still accepted.
     """
     raw = prov.get("api_keys")
@@ -285,7 +286,7 @@ def _format_hhmm(minutes: int) -> str:
 
 def _serialize_key(k: ApiKey) -> dict | str:
     """Key entry → YAML value: a plain string, or a mapping that keeps the
-    note and the zhipu-team organization/project fields."""
+    note and the team organization/project fields."""
     if not (k.note or k.organization or k.project):
         return k.key
     data: dict = {"key": k.key}
@@ -362,10 +363,11 @@ server:
 # a plain key string or {key, note} where `note` is a free-form label stored
 # in the config (shown by `flexgate status`, included in fallback logs).
 # Multiple accounts on the same upstream should be configured this way
-# instead of as separate providers. zhipu GLM Coding Plan *team* keys also
+# instead of as separate providers. GLM Coding Plan *team* keys also
 # carry `organization`/`project` — the team IDs copied once from the team
 # usage page's request headers; `flexgate usage` needs them to query the
-# team plan quota, and without them the key only gets an availability probe.
+# team plan quota, and without them the entry is treated as a personal
+# coding-plan key.
 # A route's `active_key` (see below)
 # selects which key its requests start from; when that key fails with a
 # retryable error (401/402/403/429/5xx/529 or a connection error — e.g.
@@ -383,19 +385,40 @@ providers:
       - "your-minimax-api-key-3"   # plain string entry (no note)
     available_models:
       - "MiniMax-M3"
+  # GLM Coding Plan keys: z.ai (api.z.ai) and zhipu (open.bigmodel.cn) are
+  # one account system — the same keys work on both endpoints, so a key may
+  # be listed under a zai and a zhipu provider at the same time (e.g. to
+  # keep a fallback endpoint). Pick the provider by endpoint; the usage
+  # adapter is picked per key entry: without organization/project it is a
+  # personal coding-plan key, with them a team key.
   zai:
     base_url: "https://api.z.ai/api/anthropic"
     api_keys:
-      - "your-zai-api-key"
+      - "your-glm-personal-api-key"
     available_models:
       - "glm-5.3"      # used as fallback when a route omits `model`
       - "glm-4.6v"
+  zai-team:
+    base_url: "https://api.z.ai/api/anthropic"
+    api_keys:
+      - key: "your-glm-team-api-key"
+        note: "teammate name"
+        organization: "org-XXXXXXXX"   # GLM team IDs (see comment above)
+        project: "proj_XXXXXXXX"
+    available_models:
+      - "glm-5.3"
+  zhipu:
+    base_url: "https://open.bigmodel.cn/api/anthropic"
+    api_keys:
+      - "your-glm-personal-api-key"
+    available_models:
+      - "glm-5.3"
   zhipu-team:
     base_url: "https://open.bigmodel.cn/api/anthropic"
     api_keys:
-      - key: "your-zhipu-team-api-key"
+      - key: "your-glm-team-api-key"
         note: "teammate name"
-        organization: "org-XXXXXXXX"   # zhipu team IDs (see comment above)
+        organization: "org-XXXXXXXX"
         project: "proj_XXXXXXXX"
     available_models:
       - "glm-5.3"
